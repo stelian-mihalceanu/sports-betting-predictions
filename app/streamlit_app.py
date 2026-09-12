@@ -12,75 +12,83 @@ sys.path.insert(0, str(ROOT))
 
 from src.data_filters import filter_football_target, filter_tennis_target
 from src.data_loader import load_football_matches, load_tennis_atp, load_tennis_wta
+from src.features import add_elo_football_features, add_elo_features, add_football_form_features
 
 st.set_page_config(page_title="Sports Betting Predictions", page_icon="🏆", layout="wide")
-
 st.title("🏆 Sports Betting Predictions")
-st.caption("Decision-support dashboard for football and tennis model outputs.")
+st.caption("Football & tennis analytics dashboard")
 
 
-def _safe_load(loader, *args, **kwargs):
+def safe_load(loader):
     try:
-        return loader(*args, **kwargs), None
-    except FileNotFoundError as exc:
+        return loader(), None
+    except Exception as exc:
         return None, str(exc)
-    except Exception as exc:  # surface data/config problems without crashing the UI
-        return None, f"Could not load data: {exc}"
 
 
 with st.sidebar:
-    st.header("Settings")
-    sport = st.selectbox("Sport", ["Football", "Tennis"])
+    sport = st.radio("Sport", ["Football", "Tennis"])
     st.divider()
-    st.write("Data directory")
-    st.code(os.getenv("DATEWISE_DATA_DIR", "data/"), language="text")
+    st.subheader("Dashboard")
+    st.write("Explore target competitions, recent form and pre-match ELO ratings.")
 
 if sport == "Football":
-    st.subheader("Football")
-    df, error = _safe_load(load_football_matches)
-    if df is None:
-        st.warning("No local football dataset is configured yet.")
-        st.info(error)
+    data, error = safe_load(load_football_matches)
+    if data is None:
+        st.warning("Football data is not configured yet.")
+        st.code(error)
         st.stop()
 
-    filtered = filter_football_target(df)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Matches", f"{len(filtered):,}")
-    c2.metric("Competitions", filtered["category"].nunique())
-    c3.metric("Teams", pd.unique(pd.concat([filtered["home_team"], filtered["away_team"]])).size)
+    filtered = filter_football_target(data)
+    if filtered.empty:
+        st.warning("No target football matches were found in the loaded dataset.")
+        st.stop()
 
-    categories = ["All"] + sorted(filtered["category"].dropna().unique().tolist())
-    category = st.selectbox("Competition", categories)
+    filtered = add_football_form_features(filtered)
+    filtered = add_elo_football_features(filtered)
+    categories = sorted(filtered["category"].dropna().unique())
+    category = st.selectbox("Competition", ["All"] + categories)
     view = filtered if category == "All" else filtered[filtered["category"] == category]
 
-    st.subheader("Matches")
-    st.dataframe(view.head(250), use_container_width=True, hide_index=True)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Matches", f"{len(view):,}")
+    c2.metric("Competitions", view["category"].nunique())
+    c3.metric("Avg home ELO", f"{view['home_elo'].mean():.0f}")
+    c4.metric("Avg away ELO", f"{view['away_elo'].mean():.0f}")
+
+    st.subheader("Match analytics")
+    columns = [c for c in ["date", "competition", "home_team", "away_team", "home_elo", "away_elo", "elo_diff", "home_form_points", "away_form_points"] if c in view.columns]
+    st.dataframe(view[columns].tail(250), use_container_width=True, hide_index=True)
 
 else:
-    st.subheader("Tennis")
-    atp, atp_error = _safe_load(load_tennis_atp)
-    wta, wta_error = _safe_load(load_tennis_wta)
+    atp, atp_error = safe_load(load_tennis_atp)
+    wta, wta_error = safe_load(load_tennis_wta)
     if atp is None and wta is None:
-        st.warning("No local ATP/WTA datasets are configured yet.")
-        st.info(atp_error or wta_error)
+        st.warning("ATP/WTA data is not configured yet.")
+        st.code(atp_error or wta_error)
         st.stop()
 
     atp = atp if atp is not None else pd.DataFrame()
     wta = wta if wta is not None else pd.DataFrame()
     atp_target, wta_target = filter_tennis_target(atp, wta)
-    combined = pd.concat([
-        atp_target.assign(tour="ATP"),
-        wta_target.assign(tour="WTA"),
-    ], ignore_index=True)
+    view = pd.concat([atp_target.assign(tour="ATP"), wta_target.assign(tour="WTA")], ignore_index=True)
+    if view.empty:
+        st.warning("No target tennis matches were found in the loaded datasets.")
+        st.stop()
+
+    view = add_elo_features(view)
+    tour = st.selectbox("Tour", ["All", "ATP", "WTA"])
+    if tour != "All":
+        view = view[view["tour"] == tour]
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Matches", f"{len(combined):,}")
-    c2.metric("ATP", f"{len(atp_target):,}")
-    c3.metric("WTA", f"{len(wta_target):,}")
+    c1.metric("Matches", f"{len(view):,}")
+    c2.metric("ATP", f"{len(view[view['tour'] == 'ATP']):,}")
+    c3.metric("WTA", f"{len(view[view['tour'] == 'WTA']):,}")
 
-    tour = st.selectbox("Tour", ["All", "ATP", "WTA"])
-    view = combined if tour == "All" else combined[combined["tour"] == tour]
-    st.dataframe(view.head(250), use_container_width=True, hide_index=True)
+    st.subheader("Match analytics")
+    columns = [c for c in ["tourney_date", "tourney_name", "tour", "winner_name", "loser_name", "winner_elo", "loser_elo", "elo_diff"] if c in view.columns]
+    st.dataframe(view[columns].tail(250), use_container_width=True, hide_index=True)
 
 st.divider()
-st.caption("Predictions are probabilistic estimates, not guarantees. Use responsibly.")
+st.caption("Probabilities and ratings are model estimates, not guarantees of outcomes or profit.")
