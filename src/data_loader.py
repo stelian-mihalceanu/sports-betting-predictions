@@ -179,9 +179,46 @@ def load_upcoming_football_fixtures(timeout: int = 8) -> pd.DataFrame:
         if not frame.empty:
             frames.append(frame)
 
+    now = pd.Timestamp.now().normalize()
     present_codes = set()
+    future_codes = set()
     if frames:
-        present_codes = set(pd.concat(frames, ignore_index=True)["league_code"].dropna().astype(str))
+        combined_initial = pd.concat(frames, ignore_index=True, sort=False)
+        present_codes = set(combined_initial["league_code"].dropna().astype(str))
+        future_codes = set(
+            combined_initial.loc[
+                (combined_initial["date"] >= now)
+                & combined_initial["home_goals"].isna()
+                & combined_initial["away_goals"].isna(),
+                "league_code",
+            ].dropna().astype(str)
+        )
+
+    # A generic fixtures feed can contain old-season rows and therefore make a
+    # league look "present" even when it has no current-season future fixtures.
+    # Load the current 26/27 CSV whenever a supported league lacks a future row.
+    season = "2627"
+    for code in ["E0", "D1", "SP1", "I1"]:
+        if code in future_codes:
+            continue
+        frame = _fetch_fixture_source(
+            f"{FOOTBALL_DATA}/{season}/{code}.csv",
+            code=code,
+            season=season,
+            force_code=True,
+            timeout=timeout,
+        )
+        if not frame.empty:
+            frames.append(frame)
+            present_codes.add(code)
+            future_codes.update(
+                frame.loc[
+                    (frame["date"] >= now)
+                    & frame["home_goals"].isna()
+                    & frame["away_goals"].isna(),
+                    "league_code",
+                ].dropna().astype(str)
+            )
 
     if "RO1" not in present_codes:
         frame = _fetch_fixture_source(
@@ -194,30 +231,16 @@ def load_upcoming_football_fixtures(timeout: int = 8) -> pd.DataFrame:
         if not frame.empty:
             frames.append(frame)
             present_codes.add("RO1")
+            future_codes.update(
+                frame.loc[
+                    (frame["date"] >= now)
+                    & frame["home_goals"].isna()
+                    & frame["away_goals"].isna(),
+                    "league_code",
+                ].dropna().astype(str)
+            )
 
-    season = "2627"
-    for code in ["E0", "D1", "SP1", "I1"]:
-        if code in present_codes:
-            continue
-        frame = _fetch_fixture_source(
-            f"{FOOTBALL_DATA}/{season}/{code}.csv",
-            code=code,
-            season=season,
-            force_code=True,
-            timeout=timeout,
-        )
-        if not frame.empty:
-            frames.append(frame)
-            present_codes.add(code)
-
-    now = pd.Timestamp.now().normalize()
-    has_future_ro1 = False
-    if frames:
-        combined_ro = pd.concat(frames, ignore_index=True, sort=False)
-        has_future_ro1 = bool(
-            ((combined_ro["league_code"] == "RO1") & (combined_ro["date"] >= now) &
-             combined_ro["home_goals"].isna() & combined_ro["away_goals"].isna()).any()
-        )
+    has_future_ro1 = "RO1" in future_codes
     if not has_future_ro1:
         frames.append(_liga1_fallback_fixtures())
 
@@ -260,103 +283,35 @@ def _load_tennis_years(tour: str, years) -> pd.DataFrame:
     for year in years:
         url = f"{TENNIS_ARCHIVE}/{tour}/{tour}_matches_{year}.csv"
         try:
-            frame = pd.read_csv(url)
-            frame["tour"] = tour.upper()
-            frames.append(frame)
-        except (requests.RequestException, OSError, ValueError):
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+            frames.append(pd.read_csv(pd.io.common.BytesIO(response.content)))
+        except (requests.RequestException, OSError, ValueError, pd.errors.ParserError):
             continue
     if not frames:
-        raise RuntimeError(f"Unable to load remote {tour.upper()} tennis data")
+        return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
 
 
-def _load_one_football_file(start_year: int, code: str, competition: str, timeout: int) -> pd.DataFrame:
-    season = f"{str(start_year)[-2:]}{str(start_year + 1)[-2:]}"
-    url = f"{FOOTBALL_DATA}/{season}/{code}.csv"
-    try:
-        frame = pd.read_csv(url, encoding="latin1")
-    except (requests.RequestException, OSError, ValueError, pd.errors.ParserError):
-        return pd.DataFrame()
-
-    frame = frame.rename(columns={
-        "Date": "date",
-        "HomeTeam": "home_team",
-        "AwayTeam": "away_team",
-        "FTHG": "home_goals",
-        "FTAG": "away_goals",
-        "FTR": "result",
-    })
-    required = ["date", "home_team", "away_team", "home_goals", "away_goals"]
-    if not all(column in frame.columns for column in required):
-        return pd.DataFrame()
-
-    optional = ["result", "HTHG", "HTAG", "HC", "AC", "HY", "AY", "HR", "AR"]
-    columns = required + [column for column in optional if column in frame.columns and column not in required]
-    normalized = frame[columns].copy()
-    normalized["date"] = pd.to_datetime(normalized["date"], dayfirst=True, errors="coerce")
-    normalized["home_goals"] = pd.to_numeric(normalized["home_goals"], errors="coerce")
-    normalized["away_goals"] = pd.to_numeric(normalized["away_goals"], errors="coerce")
-    normalized = normalized.dropna(subset=["date", "home_team", "away_team"])
-    normalized["competition"] = competition
-    normalized["season"] = season
-    return normalized
-
-
-def _load_football_data(years, timeout: int = 8) -> pd.DataFrame:
-    jobs = [
-        (start_year, code, competition)
-        for start_year in years
-        for code, competition in FOOTBALL_LEAGUES.items()
-        if code != "RO1"
-    ]
-    frames: list[pd.DataFrame] = []
-
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {
-            executor.submit(_load_one_football_file, start_year, code, competition, timeout): (start_year, code)
-            for start_year, code, competition in jobs
-        }
-        for future in as_completed(futures):
+def _load_football_data(seasons, timeout: int = 8) -> pd.DataFrame:
+    frames = []
+    jobs = []
+    for season in seasons:
+        code = str(season)[-2:] + str(int(str(season)[-2:]) + 1).zfill(2)
+        for league_code in FOOTBALL_LEAGUES:
+            jobs.append((f"{FOOTBALL_DATA}/{code}/{league_code}.csv", league_code, code))
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_map = {executor.submit(_fetch_fixture_source, url, league_code, code, True, timeout): (league_code, code) for url, league_code, code in jobs}
+        for future in as_completed(future_map):
             frame = future.result()
             if not frame.empty:
                 frames.append(frame)
-
-    try:
-        frame = pd.read_csv(f"{FOOTBALL_EXTRA_DATA}/ROU.csv", encoding="latin1")
-        frame = frame.rename(columns={
-            "Date": "date",
-            "HomeTeam": "home_team",
-            "AwayTeam": "away_team",
-            "FTHG": "home_goals",
-            "FTAG": "away_goals",
-            "FTR": "result",
-        })
-        required = ["date", "home_team", "away_team", "home_goals", "away_goals"]
-        if all(column in frame.columns for column in required):
-            optional = ["result", "HTHG", "HTAG", "HC", "AC", "HY", "AY", "HR", "AR"]
-            columns = required + [column for column in optional if column in frame.columns and column not in required]
-            normalized = frame[columns].copy()
-            normalized["date"] = pd.to_datetime(normalized["date"], dayfirst=True, errors="coerce")
-            normalized["home_goals"] = pd.to_numeric(normalized["home_goals"], errors="coerce")
-            normalized["away_goals"] = pd.to_numeric(normalized["away_goals"], errors="coerce")
-            normalized = normalized.dropna(subset=["date", "home_team", "away_team"])
-            normalized["competition"] = "Liga 1"
-            normalized["season"] = "multi"
-            frames.append(normalized)
-    except (requests.RequestException, OSError, ValueError, pd.errors.ParserError):
-        pass
-
     if not frames:
-        raise RuntimeError("Unable to load public football data")
+        return pd.DataFrame(columns=["league_code", "date", "home_team", "away_team", "competition", "home_goals", "away_goals", "season"])
     return pd.concat(frames, ignore_index=True, sort=False).sort_values("date").reset_index(drop=True)
 
 
 def _read_table(path: Path, label: str) -> pd.DataFrame:
-    if not path.exists():
-        raise FileNotFoundError(f"{label} dataset not found at {path}. Add the dataset to data/raw/.")
-    suffix = path.suffix.lower()
-    if suffix == ".parquet":
+    if path.suffix.lower() == ".parquet":
         return pd.read_parquet(path)
-    if suffix == ".csv":
-        return pd.read_csv(path)
-    raise ValueError(f"Unsupported dataset format: {suffix}")
+    return pd.read_csv(path)
