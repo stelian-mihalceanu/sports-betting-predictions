@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.data_filters import filter_football_target, filter_tennis_target
 from src.data_loader import load_football_matches, load_tennis_atp, load_tennis_wta, load_upcoming_football_fixtures
+from src.european_fixtures import load_european_fixtures
 from src.features import add_elo_features, add_football_form_features
 from src.predictions import build_team_stats, predict_match
 
@@ -22,13 +23,20 @@ st.caption("Fast football & tennis analytics with probability-based pre-match es
 @st.cache_data(ttl=30 * 60, show_spinner=False)
 def load_all_football() -> pd.DataFrame:
     data = load_football_matches(source="football-data")
+    frames = [data]
     try:
         fixtures = load_upcoming_football_fixtures()
         if not fixtures.empty:
-            data = pd.concat([data, fixtures], ignore_index=True, sort=False)
+            frames.append(fixtures)
     except Exception:
         pass
-    return data.sort_values("date").reset_index(drop=True)
+    try:
+        european = load_european_fixtures()
+        if not european.empty:
+            frames.append(european)
+    except Exception:
+        pass
+    return pd.concat(frames, ignore_index=True, sort=False).sort_values("date").reset_index(drop=True)
 
 @st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
 def load_all_tennis() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -86,7 +94,7 @@ def build_predictions(upcoming: pd.DataFrame, completed: pd.DataFrame) -> pd.Dat
 with st.sidebar:
     sport = st.radio("Sport", ["Football", "Tennis"], key="sport")
     st.divider()
-    st.caption("Football: Football-Data.co.uk + fixture feeds")
+    st.caption("Football: Football-Data.co.uk + European fixture feeds")
     st.caption("Tennis: Sackmann archive")
     st.divider()
     st.caption("Probabilities are model estimates, not bookmaker odds or guarantees.")
