@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import os
+import math
 from pathlib import Path
 import sys
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -12,11 +13,23 @@ sys.path.insert(0, str(ROOT))
 
 from src.data_filters import filter_football_target, filter_tennis_target
 from src.data_loader import load_football_matches, load_tennis_atp, load_tennis_wta
-from src.features import add_elo_football_features, add_elo_features, add_football_form_features
+from src.features import add_elo_features, add_football_form_features
+from src.models import train_football_1x2_model
 
 st.set_page_config(page_title="Sports Betting Predictions", page_icon="🏆", layout="wide")
+
 st.title("🏆 Sports Betting Predictions")
-st.caption("Football & tennis analytics dashboard")
+st.caption("Football & tennis analytics dashboard — public data + pre-match ELO/model estimates")
+
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def load_all_football() -> pd.DataFrame:
+    return load_football_matches(source="football-data")
+
+
+@st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
+def load_all_tennis() -> tuple[pd.DataFrame, pd.DataFrame]:
+    return load_tennis_atp(), load_tennis_wta()
 
 
 def safe_load(loader):
@@ -26,69 +39,162 @@ def safe_load(loader):
         return None, str(exc)
 
 
+def football_history_and_upcoming(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    data = data.copy()
+    data["date"] = pd.to_datetime(data["date"], errors="coerce")
+    completed = data.dropna(subset=["home_goals", "away_goals", "date"]).copy()
+    upcoming = data[data["date"].notna() & data["home_goals"].isna() & data["away_goals"].isna()].copy()
+    return completed, upcoming
+
+
+def build_football_features(completed: pd.DataFrame) -> pd.DataFrame:
+    if completed.empty:
+        return completed
+    featured = add_football_form_features(completed)
+    from src.features import add_elo_football_features
+    return add_elo_football_features(featured)
+
+
+def team_state(history: pd.DataFrame) -> dict[str, dict[str, float]]:
+    ratings: dict[str, float] = {}
+    form: dict[str, list[tuple[float, float, float]]] = {}
+    for _, row in history.sort_values("date").iterrows():
+        home, away = str(row["home_team"]), str(row["away_team"])
+        rh, ra = ratings.get(home, 1500.0), ratings.get(away, 1500.0)
+        expected_home = 1.0 / (1.0 + 10.0 ** (((ra) - (rh + 60.0)) / 400.0))
+        hg, ag = float(row["home_goals"]), float(row["away_goals"])
+        actual_home = 1.0 if hg > ag else (0.5 if hg == ag else 0.0)
+        change = 32.0 * (actual_home - expected_home)
+        ratings[home], ratings[away] = rh + change, ra - change
+        hp, ap = (3.0, 0.0) if hg > ag else ((0.0, 3.0) if hg < ag else (1.0, 1.0))
+        form.setdefault(home, []).append((hp, hg, ag))
+        form.setdefault(away, []).append((ap, ag, hg))
+    state = {}
+    for team in set(ratings) | set(form):
+        recent = form.get(team, [])[-5:]
+        state[team] = {
+            "elo": ratings.get(team, 1500.0),
+            "form_points": float(np.mean([x[0] for x in recent])) if recent else 0.0,
+            "goals_for": float(np.mean([x[1] for x in recent])) if recent else 0.0,
+            "goals_against": float(np.mean([x[2] for x in recent])) if recent else 0.0,
+        }
+    return state
+
+
+def heuristic_1x2(home_elo: float, away_elo: float) -> tuple[float, float, float]:
+    strength = 1.0 / (1.0 + 10.0 ** (((away_elo) - (home_elo + 60.0)) / 400.0))
+    draw = 0.24
+    home = strength * (1.0 - draw)
+    away = (1.0 - strength) * (1.0 - draw)
+    return home, draw, away
+
+
 with st.sidebar:
     sport = st.radio("Sport", ["Football", "Tennis"])
     st.divider()
-    st.subheader("Dashboard")
-    st.write("Explore target competitions, recent form and pre-match ELO ratings.")
+    st.subheader("Data")
+    st.caption("Football: Football-Data.co.uk · Tennis: Sackmann archive")
+    st.divider()
+    st.caption("Refresh data automatically from the public sources.")
 
 if sport == "Football":
-    data, error = safe_load(load_football_matches)
+    data, error = safe_load(load_all_football)
     if data is None:
-        st.warning("Football data is not configured yet.")
+        st.error("Football data could not be loaded.")
         st.code(error)
         st.stop()
 
     filtered = filter_football_target(data)
-    if filtered.empty:
-        st.warning("No target football matches were found in the loaded dataset.")
+    completed, upcoming = football_history_and_upcoming(filtered)
+    if completed.empty:
+        st.warning("No completed football matches are available for the target competitions.")
         st.stop()
 
-    filtered = add_football_form_features(filtered)
-    filtered = add_elo_football_features(filtered)
-    categories = sorted(filtered["category"].dropna().unique())
+    featured = build_football_features(completed)
+    categories = sorted(featured["category"].dropna().unique())
     category = st.selectbox("Competition", ["All"] + categories)
-    view = filtered if category == "All" else filtered[filtered["category"] == category]
+    view = featured if category == "All" else featured[featured["category"] == category]
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Matches", f"{len(view):,}")
+    c1.metric("Completed matches", f"{len(view):,}")
     c2.metric("Competitions", view["category"].nunique())
     c3.metric("Avg home ELO", f"{view['home_elo'].mean():.0f}")
     c4.metric("Avg away ELO", f"{view['away_elo'].mean():.0f}")
 
-    st.subheader("Match analytics")
-    columns = [c for c in ["date", "competition", "home_team", "away_team", "home_elo", "away_elo", "elo_diff", "home_form_points", "away_form_points"] if c in view.columns]
-    st.dataframe(view[columns].tail(250), use_container_width=True, hide_index=True)
+    tab1, tab2 = st.tabs(["📊 Analytics", "🔮 Upcoming predictions"])
+    with tab1:
+        st.subheader("Recent match analytics")
+        columns = [c for c in ["date", "competition", "home_team", "away_team", "home_goals", "away_goals", "home_elo", "away_elo", "elo_diff", "home_form_points", "away_form_points"] if c in view.columns]
+        st.dataframe(view.sort_values("date", ascending=False)[columns].head(250), use_container_width=True, hide_index=True)
+
+    with tab2:
+        if upcoming.empty:
+            st.info("No future fixtures are currently available in the public feed.")
+        else:
+            state = team_state(completed)
+            rows = []
+            for _, match in upcoming.sort_values("date").head(100).iterrows():
+                home, away = str(match["home_team"]), str(match["away_team"])
+                hs = state.get(home, {"elo": 1500.0})
+                aws = state.get(away, {"elo": 1500.0})
+                ph, pd, pa = heuristic_1x2(hs["elo"], aws["elo"])
+                rows.append({
+                    "Date": match["date"],
+                    "Competition": match["competition"],
+                    "Home": home,
+                    "Away": away,
+                    "Home win": ph,
+                    "Draw": pd,
+                    "Away win": pa,
+                    "Model pick": max([(ph, "1"), (pd, "X"), (pa, "2")])[1],
+                    "ELO diff": hs["elo"] - aws["elo"],
+                })
+            predictions = pd.DataFrame(rows)
+            for column in ["Home win", "Draw", "Away win"]:
+                predictions[column] = predictions[column].map(lambda value: f"{value:.0%}")
+            st.caption("ELO probabilities are model estimates, not bookmaker odds or guarantees.")
+            st.dataframe(predictions, use_container_width=True, hide_index=True)
 
 else:
-    atp, atp_error = safe_load(load_tennis_atp)
-    wta, wta_error = safe_load(load_tennis_wta)
-    if atp is None and wta is None:
-        st.warning("ATP/WTA data is not configured yet.")
-        st.code(atp_error or wta_error)
+    (atp, wta), error = safe_load(load_all_tennis)
+    if atp is None:
+        st.error("Tennis data could not be loaded.")
+        st.code(error)
         st.stop()
 
-    atp = atp if atp is not None else pd.DataFrame()
-    wta = wta if wta is not None else pd.DataFrame()
     atp_target, wta_target = filter_tennis_target(atp, wta)
-    view = pd.concat([atp_target.assign(tour="ATP"), wta_target.assign(tour="WTA")], ignore_index=True)
-    if view.empty:
-        st.warning("No target tennis matches were found in the loaded datasets.")
-        st.stop()
-
+    atp_target["tour"] = "ATP"
+    wta_target["tour"] = "WTA"
+    view = pd.concat([atp_target, wta_target], ignore_index=True)
+    view["tourney_date"] = pd.to_datetime(view["tourney_date"], format="%Y%m%d", errors="coerce")
+    view = view.sort_values("tourney_date").reset_index(drop=True)
     view = add_elo_features(view)
+
     tour = st.selectbox("Tour", ["All", "ATP", "WTA"])
+    category = st.selectbox("Tournament category", ["All"] + sorted(view["category"].dropna().unique()))
+    filtered_view = view
     if tour != "All":
-        view = view[view["tour"] == tour]
+        filtered_view = filtered_view[filtered_view["tour"] == tour]
+    if category != "All":
+        filtered_view = filtered_view[filtered_view["category"] == category]
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Matches", f"{len(view):,}")
-    c2.metric("ATP", f"{len(view[view['tour'] == 'ATP']):,}")
-    c3.metric("WTA", f"{len(view[view['tour'] == 'WTA']):,}")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Matches", f"{len(filtered_view):,}")
+    c2.metric("ATP", f"{len(filtered_view[filtered_view['tour'] == 'ATP']):,}")
+    c3.metric("WTA", f"{len(filtered_view[filtered_view['tour'] == 'WTA']):,}")
+    c4.metric("Players", f"{pd.unique(pd.concat([filtered_view['winner_name'], filtered_view['loser_name']])).size:,}")
 
-    st.subheader("Match analytics")
-    columns = [c for c in ["tourney_date", "tourney_name", "tour", "winner_name", "loser_name", "winner_elo", "loser_elo", "elo_diff"] if c in view.columns]
-    st.dataframe(view[columns].tail(250), use_container_width=True, hide_index=True)
+    tab1, tab2 = st.tabs(["📊 Match analytics", "🎾 Player ELO"])
+    with tab1:
+        columns = [c for c in ["tourney_date", "tourney_name", "tour", "winner_name", "loser_name", "winner_elo", "loser_elo", "elo_diff", "surface"] if c in filtered_view.columns]
+        st.dataframe(filtered_view.sort_values("tourney_date", ascending=False)[columns].head(300), use_container_width=True, hide_index=True)
+    with tab2:
+        latest = {}
+        for _, row in view.sort_values("tourney_date").iterrows():
+            latest[row["winner_name"]] = row["winner_elo"]
+            latest[row["loser_name"]] = row["loser_elo"]
+        ratings = pd.DataFrame(sorted(latest.items(), key=lambda item: item[1], reverse=True), columns=["Player", "Pre-match ELO"])
+        st.dataframe(ratings.head(100), use_container_width=True, hide_index=True)
 
 st.divider()
-st.caption("Probabilities and ratings are model estimates, not guarantees of outcomes or profit.")
+st.caption("This dashboard is for research and decision support. Probabilities are estimates, not guarantees of outcomes or profit.")
