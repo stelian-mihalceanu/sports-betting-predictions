@@ -25,14 +25,6 @@ st.set_page_config(page_title="Sports Betting Predictions", page_icon="🏆", la
 st.title("🏆 Sports Betting Predictions")
 st.caption("Football & tennis analytics dashboard — public data + pre-match ELO/model estimates")
 
-FOOTBALL_DATA = "https://www.football-data.co.uk/mmz4281"
-FOOTBALL_LEAGUES = {
-    "E0": "Premier League",
-    "D1": "Bundesliga",
-    "SP1": "La Liga",
-    "I1": "Serie A",
-    "RO1": "Liga 1",
-}
 TENNIS_ARCHIVE = "https://raw.githubusercontent.com/Aneeshers/tennis-sackmann-archive/main"
 
 
@@ -43,7 +35,7 @@ def load_all_football() -> pd.DataFrame:
         fixtures = load_upcoming_football_fixtures()
         data = pd.concat([data, fixtures], ignore_index=True, sort=False)
     except Exception:
-        # Historical data remains usable even if the weekly fixture feed is temporarily unavailable.
+        # Historical data remains usable even if the current fixture feeds are temporarily unavailable.
         pass
     return data.sort_values("date").reset_index(drop=True)
 
@@ -143,27 +135,36 @@ if sport == "Football":
 
     filtered = filter_football_target(data)
     completed, upcoming = football_history_and_upcoming(filtered)
-    if completed.empty:
-        st.warning("No completed football matches are available for the target competitions.")
+    featured = build_football_features(completed)
+
+    # Build the selector from both history and future fixtures. This keeps
+    # Liga 1 visible even when the current feed has future fixtures but few/no
+    # completed rows in the current season.
+    completed_categories = set(featured["category"].dropna().unique()) if "category" in featured.columns else set()
+    upcoming_categories = set(upcoming["category"].dropna().unique()) if "category" in upcoming.columns else set()
+    categories = sorted(completed_categories | upcoming_categories)
+    if not categories:
+        st.warning("No target football competitions are currently available from the public feeds.")
         st.stop()
 
-    featured = build_football_features(completed)
-    categories = sorted(featured["category"].dropna().unique())
     category = st.selectbox("Competition", ["All"] + categories)
     view = featured if category == "All" else featured[featured["category"] == category]
     upcoming_view = upcoming if category == "All" else upcoming[upcoming["category"] == category]
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Completed matches", f"{len(view):,}")
-    c2.metric("Competitions", view["category"].nunique())
-    c3.metric("Avg home ELO", f"{view['home_elo'].mean():.0f}")
-    c4.metric("Avg away ELO", f"{view['away_elo'].mean():.0f}")
+    c2.metric("Competitions", view["category"].nunique() if not view.empty else 0)
+    c3.metric("Avg home ELO", f"{view['home_elo'].mean():.0f}" if not view.empty else "—")
+    c4.metric("Avg away ELO", f"{view['away_elo'].mean():.0f}" if not view.empty else "—")
 
     tab1, tab2 = st.tabs(["📊 Analytics", "🔮 Upcoming predictions"])
     with tab1:
         st.subheader("Recent match analytics")
-        columns = [c for c in ["date", "competition", "home_team", "away_team", "home_goals", "away_goals", "home_elo", "away_elo", "elo_diff", "home_form_points", "away_form_points"] if c in view.columns]
-        st.dataframe(view.sort_values("date", ascending=False)[columns].head(250), use_container_width=True, hide_index=True)
+        if view.empty:
+            st.info("No completed matches are currently available for this competition.")
+        else:
+            columns = [c for c in ["date", "competition", "home_team", "away_team", "home_goals", "away_goals", "home_elo", "away_elo", "elo_diff", "home_form_points", "away_form_points"] if c in view.columns]
+            st.dataframe(view.sort_values("date", ascending=False)[columns].head(250), use_container_width=True, hide_index=True)
 
     with tab2:
         if upcoming_view.empty:
