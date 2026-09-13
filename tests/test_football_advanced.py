@@ -34,6 +34,11 @@ def test_value_scanner_and_score_distribution():
     value = value_edge(0.60, 2.0)
     assert value["implied_probability"] == 0.5
     assert value["edge"] == 0.1
+    assert value["expected_value"] == 0.2
+    assert value["kelly_stake_pct"] > 0
+    # No edge (model matches implied probability exactly) -> no stake suggested.
+    no_edge = value_edge(0.5, 2.0)
+    assert no_edge["kelly_stake_pct"] == 0.0
     dist = goals_distribution(1.5, 1.0)
     assert not dist.empty
     assert dist.iloc[0]["probability"] > 0
