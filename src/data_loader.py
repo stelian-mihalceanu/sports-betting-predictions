@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -18,6 +19,12 @@ FOOTBALL_DATA = "https://www.football-data.co.uk/mmz4281"
 FOOTBALL_EXTRA_DATA = "https://www.football-data.co.uk/new"
 FOOTBALL_FIXTURES = "https://www.football-data.co.uk/matches/resources/fixtures.csv"
 FOOTBALL_EXTRA_FIXTURES = "https://www.football-data.co.uk/new_league_fixtures.csv"
+FIXTURE_DOWNLOAD = "https://fixturedownload.com/download"
+EUROPEAN_FIXTURES = {
+    "champions-league": "UEFA Champions League",
+    "europa-league": "UEFA Europa League",
+    "conference-league": "UEFA Conference League",
+}
 FOOTBALL_LEAGUES = {
     "E0": "Premier League",
     "D1": "Bundesliga",
@@ -131,6 +138,40 @@ def _fetch_fixture_source(url: str, code: str = "", season: str = "current", for
         return pd.DataFrame()
 
 
+def _fetch_fixture_download(url: str, competition: str, timeout: int = 8) -> pd.DataFrame:
+    """Load current European competition fixtures from Fixture Download."""
+    try:
+        response = requests.get(url, timeout=timeout)
+        response.raise_for_status()
+        frame = pd.read_csv(pd.io.common.BytesIO(response.content), encoding="utf-8")
+    except (requests.RequestException, OSError, ValueError, pd.errors.ParserError, UnicodeError):
+        return pd.DataFrame()
+
+    columns = {str(column).strip().casefold(): column for column in frame.columns}
+    date_col = columns.get("date")
+    home_col = columns.get("home team")
+    away_col = columns.get("away team")
+    result_col = columns.get("result")
+    if not all([date_col, home_col, away_col]):
+        return pd.DataFrame()
+
+    result = pd.DataFrame({
+        "league_code": competition,
+        "date": pd.to_datetime(frame[date_col], dayfirst=True, errors="coerce"),
+        "home_team": frame[home_col].astype(str).str.strip(),
+        "away_team": frame[away_col].astype(str).str.strip(),
+        "competition": competition,
+        "home_goals": pd.NA,
+        "away_goals": pd.NA,
+        "season": "2627",
+    })
+    if result_col:
+        parsed = frame[result_col].astype(str).str.extract(r"(\d+)\s*[-–]\s*(\d+)")
+        result["home_goals"] = pd.to_numeric(parsed[0], errors="coerce")
+        result["away_goals"] = pd.to_numeric(parsed[1], errors="coerce")
+    return result.dropna(subset=["date", "home_team", "away_team"])
+
+
 def load_upcoming_football_fixtures(timeout: int = 8) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for url in [FOOTBALL_FIXTURES, FOOTBALL_EXTRA_FIXTURES]:
@@ -169,8 +210,6 @@ def load_upcoming_football_fixtures(timeout: int = 8) -> pd.DataFrame:
             frames.append(frame)
             present_codes.add(code)
 
-    # The ROU.csv feed may contain historical/current results but no future rows.
-    # Add the verified LPF schedule whenever there is no future Liga 1 fixture.
     now = pd.Timestamp.now().normalize()
     has_future_ro1 = False
     if frames:
@@ -181,6 +220,15 @@ def load_upcoming_football_fixtures(timeout: int = 8) -> pd.DataFrame:
         )
     if not has_future_ro1:
         frames.append(_liga1_fallback_fixtures())
+
+    for slug, competition in EUROPEAN_FIXTURES.items():
+        frame = _fetch_fixture_download(
+            f"{FIXTURE_DOWNLOAD}/{slug}-2026-UTC.csv",
+            competition,
+            timeout=timeout,
+        )
+        if not frame.empty:
+            frames.append(frame)
 
     if not frames:
         return pd.DataFrame(columns=[
@@ -242,14 +290,15 @@ def _load_one_football_file(start_year: int, code: str, competition: str, timeou
     if not all(column in frame.columns for column in required):
         return pd.DataFrame()
 
-    columns = required + (["result"] if "result" in frame.columns else [])
+    optional = ["result", "HTHG", "HTAG", "HC", "AC", "HY", "AY", "HR", "AR"]
+    columns = required + [column for column in optional if column in frame.columns and column not in required]
     normalized = frame[columns].copy()
     normalized["date"] = pd.to_datetime(normalized["date"], dayfirst=True, errors="coerce")
     normalized["home_goals"] = pd.to_numeric(normalized["home_goals"], errors="coerce")
     normalized["away_goals"] = pd.to_numeric(normalized["away_goals"], errors="coerce")
     normalized = normalized.dropna(subset=["date", "home_team", "away_team"])
     normalized["competition"] = competition
-    normalized["season"] = f"{str(start_year)[-2:]}{str(start_year + 1)[-2:]}"
+    normalized["season"] = season
     return normalized
 
 
@@ -284,7 +333,8 @@ def _load_football_data(years, timeout: int = 8) -> pd.DataFrame:
         })
         required = ["date", "home_team", "away_team", "home_goals", "away_goals"]
         if all(column in frame.columns for column in required):
-            columns = required + (["result"] if "result" in frame.columns else [])
+            optional = ["result", "HTHG", "HTAG", "HC", "AC", "HY", "AY", "HR", "AR"]
+            columns = required + [column for column in optional if column in frame.columns and column not in required]
             normalized = frame[columns].copy()
             normalized["date"] = pd.to_datetime(normalized["date"], dayfirst=True, errors="coerce")
             normalized["home_goals"] = pd.to_numeric(normalized["home_goals"], errors="coerce")
