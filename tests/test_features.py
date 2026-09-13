@@ -1,5 +1,6 @@
 import pandas as pd
 
+from src.data_filters import filter_tennis_target
 from src.features import add_elo_football_features, add_elo_features, add_football_form_features
 
 
@@ -40,3 +41,17 @@ def test_football_form_excludes_current_match():
     out = add_football_form_features(df, window=2, min_periods=1)
     assert out.loc[1, "home_form_goals_scored"] == 3
     assert out.loc[1, "home_form_goals_conceded"] == 0
+
+
+def test_wta_level_a_is_not_classified_as_atp_500():
+    atp = pd.DataFrame({
+        "tourney_name": ["Test ATP"],
+        "tourney_level": ["A"],
+    })
+    wta = pd.DataFrame({
+        "tourney_name": ["Test WTA"],
+        "tourney_level": ["A"],
+    })
+    atp_out, wta_out = filter_tennis_target(atp, wta)
+    assert atp_out.loc[atp_out.index[0], "category"] == "ATP 500"
+    assert wta_out.loc[wta_out.index[0], "category"] == "WTA 500"
