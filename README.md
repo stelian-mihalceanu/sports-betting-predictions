@@ -15,14 +15,16 @@ The app is designed around a simple question: **which matches and markets deserv
 ## UX highlights
 
 ### Football
-- **Top signals**: ranked upcoming matches with FT pick, model confidence, likely score, xG, O2.5, BTTS, corners and cards
-- **Matches**: compact match cards with expandable market details
-- **Markets**: rank upcoming fixtures by a selected market
-- **League pulse**: recent goal and match-level context by competition
-- **Filters**: competition, time window and minimum model confidence
+- **Top signals:** ranked upcoming matches with FT pick, confidence, likely score, xG, O2.5, BTTS, corners and cards
+- **Matches:** compact match cards with expandable market details
+- **Football Match Center:** match-level detail with last 5, H2H, team attack/defence strength, Elo, score distribution and ensemble components
+- **Markets:** rank upcoming fixtures by a selected market
+- **League pulse:** recent goal and match-level context by competition
+- **Value scanner:** compare model probability with an entered decimal bookmaker price
+- **Filters:** competition, time window and minimum model confidence
 
 ### Tennis
-- **Match Lab**: compare any two supported ATP/WTA players
+- **Match Lab:** compare any two supported ATP/WTA players
 - Surface selector: All / Hard / Clay / Grass / Carpet
 - Player win probability and confidence
 - Overall and surface-aware Elo
@@ -38,9 +40,12 @@ The football engine is deliberately transparent rather than pretending to be a b
 - recency-weighted team scoring rates
 - home/away splits
 - pre-match Elo strength
+- separate recent attack and defence strength indicators
 - first-half scoring rates when available
 - corners and cards when the source contains them
 - Poisson score distributions
+- an ensemble layer combining Poisson, Elo, recent form and a market-style prior
+- conservative probability shrinkage for sparse samples
 
 The dashboard exposes FT and HT 1X2, double chance, exact-score mode, xG, goal totals, BTTS, first-half goals, corners and cards.
 
@@ -52,11 +57,22 @@ Additional market lines include:
 - Cards: Over 2.5 / 3.5 / 4.5
 - Double chance: 1X / X2 / 12
 
-Probabilities are model estimates, not bookmaker odds or guarantees.
+## Value scanner
+
+The Football Match Center accepts decimal odds and calculates:
+
+- implied probability = `1 / odds`
+- model-vs-market edge in percentage points
+- fair odds = `1 / model probability`
+- simple expected value = `model probability × odds - 1`
+
+Bookmaker pages such as Superbet, Betano, Unibet and MrBit have dynamic odds that can change during the day. The application therefore does **not** rely on fragile HTML scraping. The current scanner supports manual price entry; an authorized odds API/feed can be connected later for automated multi-bookmaker ingestion.
+
+Probabilities and value calculations are model estimates, not bookmaker odds or guarantees.
 
 ## Tennis model
 
-The tennis Match Lab is designed for matchup research when a live fixture feed is not available. It uses completed matches to estimate:
+The Tennis Match Lab is designed for matchup research when a live fixture feed is not available. It uses completed matches to estimate:
 
 - Elo strength
 - surface-specific Elo
@@ -94,9 +110,11 @@ Football historical/current results come from Football-Data.co.uk public CSV fee
 
 Current UEFA competition schedules are loaded from Fixture Download. UEFA's own competition pages remain useful authoritative references for official fixtures and competition statistics. urlUEFA Champions League fixtures & resultshttps://www.uefa.com/uefachampionsleague/news/02a8-2174c9e9019d-f909a77bd77a-1000--2026-27-champions-league-all-the-league-phase-fixtures/
 
-Sofascore, Forebet, BetMines, PredictZ, Sports Mole, Football Whispers, Tiki Taka, Goal Signal and ScoreGPT were used as **UX/model-design references** for ideas such as top signals, market filters, form context, league statistics, confidence, previews and broader market coverage. Their published accuracy claims are not treated as ground truth.
+Sofascore, Forebet, BetMines, PredictZ, Sports Mole, Football Whispers, Tiki Taka, Goal Signal and ScoreGPT were used as UX/model-design references for ideas such as top signals, market filters, form context, league statistics, confidence, previews and broader market coverage. Their published accuracy claims are not treated as ground truth.
 
 For tennis, the app uses a public ATP/WTA historical archive. Official ATP and WTA pages are used as reference points for ranking/statistics concepts; the WTA Stats Zone, for example, exposes serving/returning statistics such as aces, double faults, first-serve points, service games won and return points won. urlWTA Stats Zonehttps://www.wtatennis.com/stats/2026
+
+For bookmaker context, Superbet documents 1X2, BTTS, double chance and many additional football markets; its odds are dynamic. Unibet documents concepts such as Draw No Bet and handicaps, while MrBit's rules document a broad set of football markets. These sources are treated as market-design references, not as prediction ground truth. citeturn0search0turn1search4turn0search9
 
 ## Project structure
 
@@ -104,6 +122,8 @@ For tennis, the app uses a public ATP/WTA historical archive. Official ATP and W
 sports-betting-predictions/
 ├─ app/
 │  └─ streamlit_app.py
+├─ pages/
+│  └─ Football_Match_Center.py
 ├─ data/
 │  ├─ raw/
 │  └─ processed/
@@ -111,6 +131,7 @@ sports-betting-predictions/
 │  ├─ data_filters.py
 │  ├─ data_loader.py
 │  ├─ extra_football.py
+│  ├─ football_advanced.py
 │  ├─ features.py
 │  ├─ models.py
 │  ├─ predictions.py
@@ -145,7 +166,7 @@ For Streamlit Community Cloud, use `app/streamlit_app.py` as the entrypoint and 
 
 ## Responsible use
 
-Model outputs are probabilistic estimates for research and decision support. They are not guarantees of results, betting returns or profit. Do not interpret model confidence as a promise of accuracy.
+Model outputs are probabilistic estimates for research and decision support. They are not guarantees of results, betting returns or profit. Do not interpret model confidence or value edge as a promise of accuracy or profit.
 
 ## License
 
