@@ -76,14 +76,16 @@ def _normalize_fixture_frame(frame: pd.DataFrame, code: str, season: str = "curr
     frame = frame[frame["league_code"].isin(FOOTBALL_LEAGUES)].copy()
     if frame.empty:
         return frame
+    home_goals = frame["home_goals"] if "home_goals" in frame.columns else pd.Series(pd.NA, index=frame.index)
+    away_goals = frame["away_goals"] if "away_goals" in frame.columns else pd.Series(pd.NA, index=frame.index)
     return pd.DataFrame({
         "league_code": frame["league_code"].to_numpy(),
         "date": pd.to_datetime(frame["date"], dayfirst=True, errors="coerce").to_numpy(),
         "home_team": frame["home_team"].astype(str).to_numpy(),
         "away_team": frame["away_team"].astype(str).to_numpy(),
         "competition": frame["league_code"].map(FOOTBALL_LEAGUES).to_numpy(),
-        "home_goals": pd.to_numeric(frame.get("home_goals"), errors="coerce").to_numpy(),
-        "away_goals": pd.to_numeric(frame.get("away_goals"), errors="coerce").to_numpy(),
+        "home_goals": pd.to_numeric(home_goals, errors="coerce").to_numpy(),
+        "away_goals": pd.to_numeric(away_goals, errors="coerce").to_numpy(),
         "season": [season] * len(frame),
     }).dropna(subset=["date", "home_team", "away_team"])
 
@@ -167,7 +169,17 @@ def load_upcoming_football_fixtures(timeout: int = 8) -> pd.DataFrame:
             frames.append(frame)
             present_codes.add(code)
 
-    if "RO1" not in present_codes:
+    # The ROU.csv feed may contain historical/current results but no future rows.
+    # Add the verified LPF schedule whenever there is no future Liga 1 fixture.
+    now = pd.Timestamp.now().normalize()
+    has_future_ro1 = False
+    if frames:
+        combined_ro = pd.concat(frames, ignore_index=True, sort=False)
+        has_future_ro1 = bool(
+            ((combined_ro["league_code"] == "RO1") & (combined_ro["date"] >= now) &
+             combined_ro["home_goals"].isna() & combined_ro["away_goals"].isna()).any()
+        )
+    if not has_future_ro1:
         frames.append(_liga1_fallback_fixtures())
 
     if not frames:
