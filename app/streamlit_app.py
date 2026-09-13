@@ -181,12 +181,13 @@ if sport == "Football":
         st.dataframe(view.sort_values("date", ascending=False)[columns].head(250), use_container_width=True, hide_index=True)
 
     with tab2:
+        upcoming = upcoming.sort_values("date")
         if upcoming.empty:
             st.info("No future fixtures are currently available in the public feed.")
         else:
             state = team_state(completed)
             rows = []
-            for _, match in upcoming.sort_values("date").head(100).iterrows():
+            for _, match in upcoming.head(100).iterrows():
                 home, away = str(match["home_team"]), str(match["away_team"])
                 hs = state.get(home, {"elo": 1500.0})
                 aws = state.get(away, {"elo": 1500.0})
