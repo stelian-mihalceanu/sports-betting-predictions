@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional, Union
 
 import pandas as pd
 import requests
@@ -13,18 +12,40 @@ BASE_DATA_DIR = Path(os.getenv("SPORTS_DATA_DIR", Path(__file__).parent.parent /
 RAW_DIR = BASE_DATA_DIR / "raw"
 PROCESSED_DIR = BASE_DATA_DIR / "processed"
 
+TENNIS_ARCHIVE = "https://raw.githubusercontent.com/Aneeshers/tennis-sackmann-archive/main"
+FOOTBALL_DATA = "https://www.football-data.co.uk/mmz4281"
+FOOTBALL_LEAGUES = {
+    "E0": "Premier League",
+    "D1": "Bundesliga",
+    "SP1": "La Liga",
+    "RO1": "Liga 1",
+}
+
 
 def load_tennis_atp(file_name: str = "atp_matches.csv") -> pd.DataFrame:
-    return _read_table(RAW_DIR / file_name, "ATP tennis")
+    local = RAW_DIR / file_name
+    if local.exists():
+        return _read_table(local, "ATP tennis")
+    years = range(2022, 2027)
+    return _load_tennis_years("atp", years)
 
 
 def load_tennis_wta(file_name: str = "wta_matches.csv") -> pd.DataFrame:
-    return _read_table(RAW_DIR / file_name, "WTA tennis")
+    local = RAW_DIR / file_name
+    if local.exists():
+        return _read_table(local, "WTA tennis")
+    years = range(2022, 2027)
+    return _load_tennis_years("wta", years)
 
 
-def load_football_matches(file_name: str = "matches.csv", source: str = "local", timeout: int = 20) -> pd.DataFrame:
-    if source == "local":
-        return _read_table(RAW_DIR / file_name, "football")
+def load_football_matches(
+    file_name: str = "matches.csv",
+    source: str = "local",
+    timeout: int = 20,
+) -> pd.DataFrame:
+    local = RAW_DIR / file_name
+    if source == "local" and local.exists():
+        return _read_table(local, "football")
     if source == "openfoot":
         api_key = os.getenv("OPENFOOT_API_KEY")
         if not api_key:
@@ -35,9 +56,10 @@ def load_football_matches(file_name: str = "matches.csv", source: str = "local",
             timeout=timeout,
         )
         response.raise_for_status()
-        payload = response.json()
-        return pd.DataFrame(payload)
-    raise ValueError(f"Unknown source: {source}")
+        return pd.DataFrame(response.json())
+    if source not in {"local", "football-data"}:
+        raise ValueError(f"Unknown source: {source}")
+    return _load_football_data(range(2022, 2027), timeout=timeout)
 
 
 def save_processed_data(df: pd.DataFrame, file_name: str) -> Path:
@@ -50,6 +72,56 @@ def save_processed_data(df: pd.DataFrame, file_name: str) -> Path:
     else:
         raise ValueError("Processed data must be CSV or Parquet")
     return path
+
+
+def _load_tennis_years(tour: str, years) -> pd.DataFrame:
+    frames = []
+    for year in years:
+        url = f"{TENNIS_ARCHIVE}/{tour}/{tour}_matches_{year}.csv"
+        try:
+            frame = pd.read_csv(url)
+            frame["tour"] = tour.upper()
+            frames.append(frame)
+        except (requests.RequestException, OSError, ValueError):
+            continue
+    if not frames:
+        raise RuntimeError(f"Unable to load remote {tour.upper()} tennis data")
+    return pd.concat(frames, ignore_index=True)
+
+
+def _load_football_data(years, timeout: int = 20) -> pd.DataFrame:
+    frames = []
+    for start_year in years:
+        season = f"{str(start_year)[-2:]}{str(start_year + 1)[-2:]}"
+        for code, competition in FOOTBALL_LEAGUES.items():
+            url = f"{FOOTBALL_DATA}/{season}/{code}.csv"
+            try:
+                frame = pd.read_csv(url, encoding="latin1")
+            except (requests.RequestException, OSError, ValueError):
+                continue
+            frame = frame.rename(
+                columns={
+                    "Date": "date",
+                    "HomeTeam": "home_team",
+                    "AwayTeam": "away_team",
+                    "FTHG": "home_goals",
+                    "FTAG": "away_goals",
+                    "FTR": "result",
+                }
+            )
+            required = {"date", "home_team", "away_team", "home_goals", "away_goals"}
+            if not required.issubset(frame.columns):
+                continue
+            frame["date"] = pd.to_datetime(frame["date"], dayfirst=True, errors="coerce")
+            frame["competition"] = competition
+            frame["season"] = season
+            frames.append(frame)
+    if not frames:
+        raise RuntimeError("Unable to load public football data")
+    result = pd.concat(frames, ignore_index=True)
+    for column in ["home_goals", "away_goals"]:
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    return result.sort_values("date").reset_index(drop=True)
 
 
 def _read_table(path: Path, label: str) -> pd.DataFrame:
