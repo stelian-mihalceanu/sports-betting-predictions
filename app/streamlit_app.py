@@ -5,7 +5,6 @@ import sys
 
 import numpy as np
 import pandas as pd
-import requests
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,8 +24,6 @@ st.set_page_config(page_title="Sports Betting Predictions", page_icon="🏆", la
 st.title("🏆 Sports Betting Predictions")
 st.caption("Football & tennis analytics dashboard — public data + pre-match ELO/model estimates")
 
-TENNIS_ARCHIVE = "https://raw.githubusercontent.com/Aneeshers/tennis-sackmann-archive/main"
-
 
 @st.cache_data(ttl=30 * 60, show_spinner=False)
 def load_all_football() -> pd.DataFrame:
@@ -36,17 +33,13 @@ def load_all_football() -> pd.DataFrame:
         if not fixtures.empty:
             data = pd.concat([data, fixtures], ignore_index=True, sort=False)
     except Exception as exc:
-        # Keep historical data usable when a remote fixture feed is unavailable.
         st.warning(f"Upcoming football feed temporarily unavailable: {exc}")
     return data.sort_values("date").reset_index(drop=True)
 
 
 @st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
 def load_all_tennis() -> tuple[pd.DataFrame, pd.DataFrame]:
-    def load_tour(tour: str) -> pd.DataFrame:
-        return load_tennis_atp() if tour == "atp" else load_tennis_wta()
-
-    return load_tour("atp"), load_tour("wta")
+    return load_tennis_atp(), load_tennis_wta()
 
 
 def safe_load(loader):
@@ -100,10 +93,10 @@ def team_state(history: pd.DataFrame) -> dict[str, dict[str, float]]:
 
 def heuristic_1x2(home_elo: float, away_elo: float) -> tuple[float, float, float]:
     strength = 1.0 / (1.0 + 10.0 ** (((away_elo) - (home_elo + 60.0)) / 400.0))
-    draw = 0.24
-    home = strength * (1.0 - draw)
-    away = (1.0 - strength) * (1.0 - draw)
-    return home, draw, away
+    draw_probability = 0.24
+    home_probability = strength * (1.0 - draw_probability)
+    away_probability = (1.0 - strength) * (1.0 - draw_probability)
+    return home_probability, draw_probability, away_probability
 
 
 with st.sidebar:
@@ -162,11 +155,11 @@ if sport == "Football":
                 home, away = str(match["home_team"]), str(match["away_team"])
                 hs = state.get(home, {"elo": 1500.0})
                 aws = state.get(away, {"elo": 1500.0})
-                ph, pd, pa = heuristic_1x2(hs["elo"], aws["elo"])
+                ph, pdraw, pa = heuristic_1x2(hs["elo"], aws["elo"])
                 rows.append({
                     "Date": match["date"], "Competition": match["competition"],
-                    "Home": home, "Away": away, "Home win": ph, "Draw": pd,
-                    "Away win": pa, "Model pick": max([(ph, "1"), (pd, "X"), (pa, "2")])[1],
+                    "Home": home, "Away": away, "Home win": ph, "Draw": pdraw,
+                    "Away win": pa, "Model pick": max([(ph, "1"), (pdraw, "X"), (pa, "2")])[1],
                     "ELO diff": hs["elo"] - aws["elo"],
                 })
             predictions = pd.DataFrame(rows)
