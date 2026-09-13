@@ -10,18 +10,10 @@ Filters datasets to include only target competitions:
 import pandas as pd
 from typing import Tuple
 
-GRAND_SLAM_NAMES = [
-    "Australian Open",
-    "Roland Garros",
-    "Wimbledon",
-    "US Open",
-]
+GRAND_SLAM_NAMES = ["Australian Open", "Roland Garros", "Wimbledon", "US Open"]
 
 
-def filter_tennis_target(
-    df_atp: pd.DataFrame,
-    df_wta: pd.DataFrame,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def filter_tennis_target(df_atp: pd.DataFrame, df_wta: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Filter ATP and WTA frames to the supported tournament levels."""
     atp_target = df_atp[df_atp["tourney_level"].isin(["G", "M", "A"])].copy()
     wta_target = df_wta[df_wta["tourney_level"].isin(["G", "P", "A"])].copy()
@@ -34,7 +26,6 @@ def _categorize_tennis_tourney(row: pd.Series) -> str:
     name = str(row.get("tourney_name", ""))
     level = str(row.get("tourney_level", ""))
     tour = str(row.get("tour", "ATP")).upper()
-
     if name in GRAND_SLAM_NAMES:
         return "Grand Slam"
     if tour == "WTA":
@@ -64,64 +55,84 @@ TARGET_FOOTBALL_COMPETITIONS = [
     "Romania Liga 1",
 ]
 
-TARGET_COMPETITION_IDS = [
-    "UCL",
-    "UEL",
-    "UECL",
-    "ES1",
-    "DE1",
-    "GB1",
-    "IT1",
-    "RO1",
-]
+TARGET_COMPETITION_IDS = ["UCL", "UEL", "UECL", "ES1", "DE1", "GB1", "IT1", "RO1"]
+
+
+def _normalize_football_name(value: object) -> str:
+    value = str(value).strip().casefold()
+    value = value.replace("_", " ")
+    value = " ".join(value.split())
+    aliases = {
+        "superliga": "liga 1",
+        "super liga": "liga 1",
+        "liga 1": "liga 1",
+        "romania liga 1": "liga 1",
+        "românia liga 1": "liga 1",
+        "serie a": "serie a",
+        "italy serie a": "serie a",
+        "laliga": "la liga",
+        "la liga": "la liga",
+        "premier league": "premier league",
+        "bundesliga": "bundesliga",
+        "uefa champions league": "uefa champions league",
+        "champions league": "uefa champions league",
+        "uefa europa league": "uefa europa league",
+        "europa league": "uefa europa league",
+        "uefa conference league": "uefa conference league",
+        "conference league": "uefa conference league",
+    }
+    return aliases.get(value, value)
 
 
 def filter_football_target(df: pd.DataFrame, use_names: bool = True) -> pd.DataFrame:
     """Filter football data to the supported target competitions."""
+    if df.empty:
+        return df.copy()
     if use_names:
         col = "competition" if "competition" in df.columns else "league"
-        normalized = df[col].astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
-        aliases = {
-            "superliga": "Liga 1",
-            "super liga": "Liga 1",
-            "liga 1": "Liga 1",
-            "romania liga 1": "Liga 1",
-            "serie a": "Serie A",
-            "italy serie a": "Serie A",
-            "laliga": "La Liga",
-        }
-        canonical = normalized.str.lower().map(aliases).fillna(normalized)
+        if col not in df.columns:
+            raise ValueError("Football data must contain a competition or league column")
+        normalized = df[col].map(_normalize_football_name)
         allowed = {
             "uefa champions league",
             "uefa europa league",
             "uefa conference league",
-            "laliga",
             "la liga",
             "bundesliga",
             "premier league",
             "serie a",
-            "superliga",
             "liga 1",
-            "romania liga 1",
         }
-        df_target = df[canonical.str.lower().isin(allowed)].copy()
-        df_target["competition"] = canonical[canonical.index.isin(df_target.index)].values
+        mask = normalized.isin(allowed)
+        df_target = df.loc[mask].copy()
+        df_target["competition"] = normalized.loc[mask].map({
+            "uefa champions league": "UEFA Champions League",
+            "uefa europa league": "UEFA Europa League",
+            "uefa conference league": "UEFA Conference League",
+            "la liga": "La Liga",
+            "bundesliga": "Bundesliga",
+            "premier league": "Premier League",
+            "serie a": "Serie A",
+            "liga 1": "Liga 1",
+        }).to_numpy()
     else:
         col = "competition_id"
-        df_target = df[df[col].isin(TARGET_COMPETITION_IDS)].copy()
-    df_target["category"] = df_target[col].apply(_categorize_football_competition)
+        if col not in df.columns:
+            raise ValueError("Football data must contain competition_id")
+        df_target = df.loc[df[col].isin(TARGET_COMPETITION_IDS)].copy()
+    df_target["category"] = df_target["competition"].map(_categorize_football_competition)
     return df_target
 
 
 def _categorize_football_competition(comp_name: str) -> str:
-    value = str(comp_name).strip().lower()
+    value = str(comp_name).strip().casefold()
     if "champions league" in value:
         return "European - Champions League"
     if "europa league" in value:
         return "European - Europa League"
     if "conference league" in value:
         return "European - Conference League"
-    if "laliga" in value or "la liga" in value:
+    if value in {"laliga", "la liga"}:
         return "La Liga"
     if "bundesliga" in value:
         return "Bundesliga"
