@@ -87,10 +87,13 @@ def predict_match(
 
     expected_cards = max(1.0, min(10.0, _card_rate(hs) + _card_rate(aws)))
     total_goals = home_xg + away_xg
+    score_home, score_away = most_likely_score(home_xg, away_xg)
 
     return {
         "home_xg": home_xg,
         "away_xg": away_xg,
+        "likely_home_goals": score_home,
+        "likely_away_goals": score_away,
         "ft_home": ft_home,
         "ft_draw": ft_draw,
         "ft_away": ft_away,
@@ -107,6 +110,16 @@ def predict_match(
         "ft_pick": _pick((ft_home, "1"), (ft_draw, "X"), (ft_away, "2")),
         "ht_pick": _pick((ht_home, "1"), (ht_draw, "X"), (ht_away, "2")),
     }
+
+
+def most_likely_score(home_lambda: float, away_lambda: float, max_goals: int = 6) -> tuple[int, int]:
+    best = (0, 0, -1.0)
+    for home_goals in range(max_goals + 1):
+        for away_goals in range(max_goals + 1):
+            probability = _poisson(home_lambda, home_goals) * _poisson(away_lambda, away_goals)
+            if probability > best[2]:
+                best = (home_goals, away_goals, probability)
+    return best[0], best[1]
 
 
 def _blend(first: Mapping[str, float], first_key: str, second: Mapping[str, float], second_key: str, fallback: float) -> float:
