@@ -6,7 +6,7 @@ Machine-learning decision-support application for football and tennis match anal
 
 The Streamlit app can run without committing large raw datasets to this repository. When local files are absent, the application loads public data at runtime:
 
-- **Football:** Football-Data.co.uk historical/current CSV feeds for Premier League, Bundesliga, La Liga and Liga 1 (Romania)
+- **Football:** Football-Data.co.uk historical/current CSV feeds for Premier League, Bundesliga, La Liga, Serie A and Liga 1 (Romania)
 - **Tennis:** an archival mirror of Jeff Sackmann's ATP/WTA match datasets, covering recent seasons through 2026
 
 The app caches remote data in Streamlit for a limited period to reduce repeated downloads.
@@ -36,9 +36,10 @@ The automatic public feed currently covers:
 - **Premier League**
 - **Bundesliga**
 - **La Liga**
+- **Serie A**
 - **Liga 1 (Romania)**
 
-The filtering layer also contains names/IDs for UEFA Champions League, Europa League and Conference League, but those European competitions are not included in the current no-key public loader.
+The filtering layer also contains names/IDs for UEFA Champions League, Europa League and Conference League, but those European competitions are not included in the current no-key public loader because Football-Data.co.uk's league CSV feed used by this app does not provide those competitions. The app's upcoming predictions therefore cover the domestic competitions above unless another football data source is configured.
 
 ## Project Structure
 
