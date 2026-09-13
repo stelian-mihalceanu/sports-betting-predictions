@@ -11,15 +11,19 @@ GRAND_SLAM_NAMES = ["Australian Open", "Roland Garros", "Wimbledon", "US Open"]
 def filter_tennis_target(df_atp: pd.DataFrame, df_wta: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     atp_target = df_atp[df_atp["tourney_level"].isin(["G", "M", "A"])].copy()
     wta_target = df_wta[df_wta["tourney_level"].isin(["G", "P", "A"])].copy()
-    atp_target["category"] = atp_target.apply(_categorize_tennis_tourney, axis=1)
-    wta_target["category"] = wta_target.apply(_categorize_tennis_tourney, axis=1)
+    # The ATP/WTA archives are separate files with no reliable "tour" column of
+    # their own, so the tour is passed explicitly per-frame instead of being
+    # guessed from row data (which previously defaulted everything to ATP and
+    # mislabeled WTA 500s as ATP 500s).
+    atp_target["category"] = atp_target.apply(lambda row: _categorize_tennis_tourney(row, "ATP"), axis=1)
+    wta_target["category"] = wta_target.apply(lambda row: _categorize_tennis_tourney(row, "WTA"), axis=1)
     return atp_target, wta_target
 
 
-def _categorize_tennis_tourney(row: pd.Series) -> str:
+def _categorize_tennis_tourney(row: pd.Series, tour: str = "ATP") -> str:
     name = str(row.get("tourney_name", ""))
     level = str(row.get("tourney_level", ""))
-    tour = str(row.get("tour", "ATP")).upper()
+    tour = str(row.get("tour", tour)).upper()
     if name in GRAND_SLAM_NAMES:
         return "Grand Slam"
     if tour == "WTA":
