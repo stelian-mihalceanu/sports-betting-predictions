@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from pathlib import Path
 import sys
 
@@ -14,7 +13,6 @@ sys.path.insert(0, str(ROOT))
 from src.data_filters import filter_football_target, filter_tennis_target
 from src.data_loader import load_football_matches, load_tennis_atp, load_tennis_wta
 from src.features import add_elo_features, add_football_form_features
-from src.models import train_football_1x2_model
 
 st.set_page_config(page_title="Sports Betting Predictions", page_icon="🏆", layout="wide")
 
@@ -75,8 +73,6 @@ def team_state(history: pd.DataFrame) -> dict[str, dict[str, float]]:
         state[team] = {
             "elo": ratings.get(team, 1500.0),
             "form_points": float(np.mean([x[0] for x in recent])) if recent else 0.0,
-            "goals_for": float(np.mean([x[1] for x in recent])) if recent else 0.0,
-            "goals_against": float(np.mean([x[2] for x in recent])) if recent else 0.0,
         }
     return state
 
@@ -95,7 +91,7 @@ with st.sidebar:
     st.subheader("Data")
     st.caption("Football: Football-Data.co.uk · Tennis: Sackmann archive")
     st.divider()
-    st.caption("Refresh data automatically from the public sources.")
+    st.caption("Data is refreshed automatically from the public sources.")
 
 if sport == "Football":
     data, error = safe_load(load_all_football)
@@ -156,11 +152,12 @@ if sport == "Football":
             st.dataframe(predictions, use_container_width=True, hide_index=True)
 
 else:
-    (atp, wta), error = safe_load(load_all_tennis)
-    if atp is None:
+    tennis_data, error = safe_load(load_all_tennis)
+    if tennis_data is None:
         st.error("Tennis data could not be loaded.")
         st.code(error)
         st.stop()
+    atp, wta = tennis_data
 
     atp_target, wta_target = filter_tennis_target(atp, wta)
     atp_target["tour"] = "ATP"
