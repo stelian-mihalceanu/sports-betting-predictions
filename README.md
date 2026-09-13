@@ -1,69 +1,104 @@
 # Sports Betting Predictions
 
-Machine-learning decision-support application for football and tennis match analytics, with a browser-based Streamlit interface.
+Research-oriented Streamlit application for football and tennis analytics, with a user-friendly prediction dashboard.
 
 ## Live dashboard
 
-The Streamlit app can run without committing large raw datasets to this repository. When local files are absent, the application loads public data at runtime:
+When local datasets are absent, the application loads public data at runtime and caches it in Streamlit:
 
-- **Football historical/current domestic data:** Football-Data.co.uk feeds for Premier League, Bundesliga, La Liga, Serie A and Liga 1 (Romania)
-- **Football upcoming European fixtures:** current UEFA Champions League, Europa League and Conference League schedules from Fixture Download
-- **Tennis:** an archival mirror of Jeff Sackmann's ATP/WTA match datasets, covering recent seasons through 2026
+- **Football:** Football-Data.co.uk historical/current feeds, including Premier League, Bundesliga, La Liga, Serie A, Liga 1 (Romania) and **Ekstraklasa (Poland)**
+- **European football fixtures:** UEFA Champions League, Europa League and Conference League schedules via Fixture Download
+- **Tennis:** ATP/WTA historical match archive based on Jeff Sackmann data, used for surface-aware matchup analysis
 
-The app caches remote data in Streamlit for a limited period to reduce repeated downloads.
+The app is designed around a simple question: **which matches and markets deserve a closer look, and what evidence supports the model?**
 
-## What is included
+## UX highlights
 
-- Football and tennis data loaders with local CSV/Parquet support and public-data fallback
-- Target competition filters
-- Leakage-aware rolling form features
-- Pre-match tennis and football ELO ratings
-- Football upcoming-fixture 1X2 estimates
-- Football upcoming market estimates for goals, exact-score mode, BTTS, corners and cards
-- First-half and full-time 1X2 probabilities
-- Over/under-style goal, corner and card probabilities
-- XGBoost model training helpers with temporal holdout evaluation
-- Streamlit web dashboard for analytics and upcoming football estimates
-- Pytest regression coverage for feature engineering and prediction markets
+### Football
+- **Top signals**: ranked upcoming matches with FT pick, model confidence, likely score, xG, O2.5, BTTS, corners and cards
+- **Matches**: compact match cards with expandable market details
+- **Markets**: rank upcoming fixtures by a selected market
+- **League pulse**: recent goal and match-level context by competition
+- **Filters**: competition, time window and minimum model confidence
+
+### Tennis
+- **Match Lab**: compare any two supported ATP/WTA players
+- Surface selector: All / Hard / Clay / Grass / Carpet
+- Player win probability and confidence
+- Overall and surface-aware Elo
+- Recent form
+- Serve points won, return points won, aces and double faults
+- Head-to-head record
+- Player board and historical match views
+
+## Football prediction model
+
+The football engine is deliberately transparent rather than pretending to be a black-box oracle. It combines:
+
+- recency-weighted team scoring rates
+- home/away splits
+- pre-match Elo strength
+- first-half scoring rates when available
+- corners and cards when the source contains them
+- Poisson score distributions
+
+The dashboard exposes FT and HT 1X2, double chance, exact-score mode, xG, goal totals, BTTS, first-half goals, corners and cards.
+
+Additional market lines include:
+
+- Goals: Over 1.5 / 2.5 / 3.5
+- First half: Over 0.5 / 1.5 and HT BTTS
+- Corners: Over 7.5 / 8.5 / 9.5 / 10.5
+- Cards: Over 2.5 / 3.5 / 4.5
+- Double chance: 1X / X2 / 12
+
+Probabilities are model estimates, not bookmaker odds or guarantees.
+
+## Tennis model
+
+The tennis Match Lab is designed for matchup research when a live fixture feed is not available. It uses completed matches to estimate:
+
+- Elo strength
+- surface-specific Elo
+- recent win rate
+- serve points won
+- return points won
+- aces and double faults
+- head-to-head history
+
+This is intentionally presented as a **matchup model**, not as a claim that the selected pair has a fixture scheduled.
 
 ## Supported competitions
 
-### Tennis (ATP & WTA)
-- **Grand Slams**: Australian Open, Roland Garros, Wimbledon, US Open
-- **ATP Masters 1000**
-- **ATP 500**
-- **WTA 1000**
-- **WTA 500**
-
 ### Football
-Domestic historical/current feeds:
-- **Premier League**
-- **Bundesliga**
-- **La Liga**
-- **Serie A**
-- **Liga 1 (Romania)**
+- Premier League
+- Bundesliga
+- La Liga
+- Serie A
+- Liga 1 (Romania)
+- **Ekstraklasa (Poland)**
+- UEFA Champions League
+- UEFA Europa League
+- UEFA Conference League
 
-Upcoming fixture feeds:
-- **UEFA Champions League**
-- **UEFA Europa League**
-- **UEFA Conference League**
+### Tennis
+- Grand Slams: Australian Open, Roland Garros, Wimbledon, US Open
+- ATP Masters 1000
+- ATP 500
+- WTA 1000
+- WTA 500
 
-European upcoming matches use the same prediction engine, but when a team has insufficient local historical statistics the engine falls back to broader historical team/competition averages. Market estimates are probabilistic and should not be interpreted as bookmaker odds.
+## Data provenance
 
-## Football upcoming markets
+Football historical/current results come from Football-Data.co.uk public CSV feeds. Football-Data explicitly lists Poland as an extra league with Ekstraklasa coverage and provides current/historical results and match statistics. urlFootball-Data Poland datahttps://www.football-data.co.uk/poland.php
 
-For each upcoming match the dashboard can show:
-- **FT 1 / X / 2** and the model's full-time pick
-- **HT 1 / X / 2** and the model's first-half pick
-- **Most likely score** and expected goals (xG)
-- **Over 1.5** and **Over 2.5 goals**
-- **BTTS**
-- **Expected corners** and **Over 8.5 corners**
-- **Expected cards** and **Over 3.5 cards**
+Current UEFA competition schedules are loaded from Fixture Download. UEFA's own competition pages remain useful authoritative references for official fixtures and competition statistics. urlUEFA Champions League fixtures & resultshttps://www.uefa.com/uefachampionsleague/news/02a8-2174c9e9019d-f909a77bd77a-1000--2026-27-champions-league-all-the-league-phase-fixtures/
 
-Corner and card estimates use available historical corner/card fields from the Football-Data datasets; where a team lacks those fields, the model uses a broader fallback average.
+Sofascore, Forebet, BetMines, PredictZ, Sports Mole, Football Whispers, Tiki Taka, Goal Signal and ScoreGPT were used as **UX/model-design references** for ideas such as top signals, market filters, form context, league statistics, confidence, previews and broader market coverage. Their published accuracy claims are not treated as ground truth.
 
-## Project Structure
+For tennis, the app uses a public ATP/WTA historical archive. Official ATP and WTA pages are used as reference points for ranking/statistics concepts; the WTA Stats Zone, for example, exposes serving/returning statistics such as aces, double faults, first-serve points, service games won and return points won. urlWTA Stats Zonehttps://www.wtatennis.com/stats/2026
+
+## Project structure
 
 ```text
 sports-betting-predictions/
@@ -72,19 +107,18 @@ sports-betting-predictions/
 ├─ data/
 │  ├─ raw/
 │  └─ processed/
-├─ notebooks/
-│  ├─ football_exploration.ipynb
-│  └─ tennis_exploration.ipynb
 ├─ src/
 │  ├─ data_filters.py
 │  ├─ data_loader.py
+│  ├─ extra_football.py
 │  ├─ features.py
 │  ├─ models.py
-│  └─ predictions.py
-├─ tests/
-│  ├─ test_features.py
-│  └─ test_predictions.py
-└─ requirements.txt
+│  ├─ predictions.py
+│  └─ tennis_predictions.py
+└─ tests/
+   ├─ test_features.py
+   ├─ test_predictions.py
+   └─ test_tennis_predictions.py
 ```
 
 ## Setup
@@ -107,21 +141,11 @@ pytest -q
 streamlit run app/streamlit_app.py
 ```
 
-For Streamlit Community Cloud, use `app/streamlit_app.py` as the entrypoint and Python 3.12+. The root `requirements.txt` is detected automatically by Community Cloud.
-
-## Local data override
-
-By default the application reads local files under `data/raw/` when they exist. Set `SPORTS_DATA_DIR` to use another data root.
-
-For the optional OpenFoot loader, set `OPENFOOT_API_KEY` in the hosting environment. Do not commit API keys to the repository.
-
-## Data provenance and licensing
-
-Domestic football data is supplied by Football-Data.co.uk and is used through its public CSV feeds. Current European fixture schedules are loaded from Fixture Download. Tennis data is based on Jeff Sackmann's public ATP/WTA datasets; the archival mirror documents the upstream provenance and CC BY-NC-SA 4.0 terms. If the tennis data is used in a distributed/non-commercial context, retain the required attribution and license terms.
+For Streamlit Community Cloud, use `app/streamlit_app.py` as the entrypoint and Python 3.12+.
 
 ## Responsible use
 
-Model outputs and ELO probabilities are probabilistic estimates, not guarantees of future results, betting returns or profit. This project is intended for research and decision support, not financial advice.
+Model outputs are probabilistic estimates for research and decision support. They are not guarantees of results, betting returns or profit. Do not interpret model confidence as a promise of accuracy.
 
 ## License
 
