@@ -109,14 +109,27 @@ def load_upcoming_football_fixtures(timeout: int = 20) -> pd.DataFrame:
     except (requests.RequestException, OSError, ValueError):
         pass
 
-    # Extra leagues: this is the actual current fixture feed used by
-    # Football-Data for Romania and the other extra leagues.
+    # Extra leagues: current fixture feed used by Football-Data for Romania.
     try:
         response = requests.get(FOOTBALL_EXTRA_FIXTURES, timeout=timeout)
         response.raise_for_status()
         frame = _normalize_fixture_frame(
             pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1"),
             code="",
+        )
+        if not frame.empty:
+            frames.append(frame)
+    except (requests.RequestException, OSError, ValueError):
+        pass
+
+    # Direct Romania CSV fallback. Football-Data publishes the Romania data as ROU.csv.
+    try:
+        response = requests.get(f"{FOOTBALL_EXTRA_DATA}/ROU.csv", timeout=timeout)
+        response.raise_for_status()
+        frame = _normalize_fixture_frame(
+            pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1"),
+            code="RO1",
+            season="current",
         )
         if not frame.empty:
             frames.append(frame)
