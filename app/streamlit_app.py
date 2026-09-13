@@ -5,6 +5,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,15 +20,70 @@ st.set_page_config(page_title="Sports Betting Predictions", page_icon="🏆", la
 st.title("🏆 Sports Betting Predictions")
 st.caption("Football & tennis analytics dashboard — public data + pre-match ELO/model estimates")
 
+FOOTBALL_DATA = "https://www.football-data.co.uk/mmz4281"
+FOOTBALL_LEAGUES = {
+    "E0": "Premier League",
+    "D1": "Bundesliga",
+    "SP1": "La Liga",
+    "RO1": "Liga 1",
+}
+TENNIS_ARCHIVE = "https://raw.githubusercontent.com/Aneeshers/tennis-sackmann-archive/main"
+
 
 @st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
 def load_all_football() -> pd.DataFrame:
-    return load_football_matches(source="football-data")
+    try:
+        return load_football_matches(source="football-data")
+    except Exception as exc:
+        if "Unknown source" not in str(exc):
+            raise
+        frames = []
+        for start_year in range(2022, 2027):
+            season = f"{str(start_year)[-2:]}{str(start_year + 1)[-2:]}"
+            for code, competition in FOOTBALL_LEAGUES.items():
+                url = f"{FOOTBALL_DATA}/{season}/{code}.csv"
+                response = requests.get(url, timeout=20)
+                if response.status_code != 200:
+                    continue
+                frame = pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1")
+                frame = frame.rename(columns={
+                    "Date": "date", "HomeTeam": "home_team", "AwayTeam": "away_team",
+                    "FTHG": "home_goals", "FTAG": "away_goals", "FTR": "result",
+                })
+                required = {"date", "home_team", "away_team", "home_goals", "away_goals"}
+                if not required.issubset(frame.columns):
+                    continue
+                frame["date"] = pd.to_datetime(frame["date"], dayfirst=True, errors="coerce")
+                frame["competition"] = competition
+                frame["season"] = season
+                frames.append(frame)
+        if not frames:
+            raise RuntimeError("Unable to load public football data") from exc
+        result = pd.concat(frames, ignore_index=True)
+        for column in ["home_goals", "away_goals"]:
+            result[column] = pd.to_numeric(result[column], errors="coerce")
+        return result.sort_values("date").reset_index(drop=True)
 
 
 @st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
 def load_all_tennis() -> tuple[pd.DataFrame, pd.DataFrame]:
-    return load_tennis_atp(), load_tennis_wta()
+    def load_tour(tour: str) -> pd.DataFrame:
+        try:
+            return load_tennis_atp() if tour == "atp" else load_tennis_wta()
+        except Exception:
+            frames = []
+            for year in range(2022, 2027):
+                url = f"{TENNIS_ARCHIVE}/{tour}/{tour}_matches_{year}.csv"
+                response = requests.get(url, timeout=20)
+                if response.status_code == 200:
+                    frame = pd.read_csv(pd.io.common.BytesIO(response.content))
+                    frame["tour"] = tour.upper()
+                    frames.append(frame)
+            if not frames:
+                raise RuntimeError(f"Unable to load remote {tour.upper()} tennis data")
+            return pd.concat(frames, ignore_index=True)
+
+    return load_tour("atp"), load_tour("wta")
 
 
 def safe_load(loader):
@@ -135,14 +191,9 @@ if sport == "Football":
                 aws = state.get(away, {"elo": 1500.0})
                 ph, pd, pa = heuristic_1x2(hs["elo"], aws["elo"])
                 rows.append({
-                    "Date": match["date"],
-                    "Competition": match["competition"],
-                    "Home": home,
-                    "Away": away,
-                    "Home win": ph,
-                    "Draw": pd,
-                    "Away win": pa,
-                    "Model pick": max([(ph, "1"), (pd, "X"), (pa, "2")])[1],
+                    "Date": match["date"], "Competition": match["competition"],
+                    "Home": home, "Away": away, "Home win": ph, "Draw": pd,
+                    "Away win": pa, "Model pick": max([(ph, "1"), (pd, "X"), (pa, "2")])[1],
                     "ELO diff": hs["elo"] - aws["elo"],
                 })
             predictions = pd.DataFrame(rows)
