@@ -33,30 +33,18 @@ def load_all_football() -> pd.DataFrame:
     data = load_football_matches(source="football-data")
     try:
         fixtures = load_upcoming_football_fixtures()
-        data = pd.concat([data, fixtures], ignore_index=True, sort=False)
-    except Exception:
-        # Historical data remains usable even if the current fixture feeds are temporarily unavailable.
-        pass
+        if not fixtures.empty:
+            data = pd.concat([data, fixtures], ignore_index=True, sort=False)
+    except Exception as exc:
+        # Keep historical data usable when a remote fixture feed is unavailable.
+        st.warning(f"Upcoming football feed temporarily unavailable: {exc}")
     return data.sort_values("date").reset_index(drop=True)
 
 
 @st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
 def load_all_tennis() -> tuple[pd.DataFrame, pd.DataFrame]:
     def load_tour(tour: str) -> pd.DataFrame:
-        try:
-            return load_tennis_atp() if tour == "atp" else load_tennis_wta()
-        except Exception:
-            frames = []
-            for year in range(2022, 2027):
-                url = f"{TENNIS_ARCHIVE}/{tour}/{tour}_matches_{year}.csv"
-                response = requests.get(url, timeout=20)
-                if response.status_code == 200:
-                    frame = pd.read_csv(pd.io.common.BytesIO(response.content))
-                    frame["tour"] = tour.upper()
-                    frames.append(frame)
-            if not frames:
-                raise RuntimeError(f"Unable to load remote {tour.upper()} tennis data")
-            return pd.concat(frames, ignore_index=True)
+        return load_tennis_atp() if tour == "atp" else load_tennis_wta()
 
     return load_tour("atp"), load_tour("wta")
 
@@ -119,7 +107,7 @@ def heuristic_1x2(home_elo: float, away_elo: float) -> tuple[float, float, float
 
 
 with st.sidebar:
-    sport = st.radio("Sport", ["Football", "Tennis"])
+    sport = st.radio("Sport", ["Football", "Tennis"], key="sport")
     st.divider()
     st.subheader("Data")
     st.caption("Football: Football-Data.co.uk · Tennis: Sackmann archive")
@@ -127,7 +115,8 @@ with st.sidebar:
     st.caption("Data is refreshed automatically from the public sources.")
 
 if sport == "Football":
-    data, error = safe_load(load_all_football)
+    with st.spinner("Loading football data…"):
+        data, error = safe_load(load_all_football)
     if data is None:
         st.error("Football data could not be loaded.")
         st.code(error)
@@ -137,9 +126,6 @@ if sport == "Football":
     completed, upcoming = football_history_and_upcoming(filtered)
     featured = build_football_features(completed)
 
-    # Build the selector from both history and future fixtures. This keeps
-    # Liga 1 visible even when the current feed has future fixtures but few/no
-    # completed rows in the current season.
     completed_categories = set(featured["category"].dropna().unique()) if "category" in featured.columns else set()
     upcoming_categories = set(upcoming["category"].dropna().unique()) if "category" in upcoming.columns else set()
     categories = sorted(completed_categories | upcoming_categories)
@@ -147,7 +133,7 @@ if sport == "Football":
         st.warning("No target football competitions are currently available from the public feeds.")
         st.stop()
 
-    category = st.selectbox("Competition", ["All"] + categories)
+    category = st.selectbox("Competition", ["All"] + categories, key="football_category")
     view = featured if category == "All" else featured[featured["category"] == category]
     upcoming_view = upcoming if category == "All" else upcoming[upcoming["category"] == category]
 
@@ -164,7 +150,7 @@ if sport == "Football":
             st.info("No completed matches are currently available for this competition.")
         else:
             columns = [c for c in ["date", "competition", "home_team", "away_team", "home_goals", "away_goals", "home_elo", "away_elo", "elo_diff", "home_form_points", "away_form_points"] if c in view.columns]
-            st.dataframe(view.sort_values("date", ascending=False)[columns].head(250), use_container_width=True, hide_index=True)
+            st.dataframe(view.sort_values("date", ascending=False)[columns].head(250), width="stretch", hide_index=True)
 
     with tab2:
         if upcoming_view.empty:
@@ -187,10 +173,11 @@ if sport == "Football":
             for column in ["Home win", "Draw", "Away win"]:
                 predictions[column] = predictions[column].map(lambda value: f"{value:.0%}")
             st.caption("ELO probabilities are model estimates, not bookmaker odds or guarantees.")
-            st.dataframe(predictions, use_container_width=True, hide_index=True)
+            st.dataframe(predictions, width="stretch", hide_index=True)
 
 else:
-    tennis_data, error = safe_load(load_all_tennis)
+    with st.spinner("Loading tennis data…"):
+        tennis_data, error = safe_load(load_all_tennis)
     if tennis_data is None:
         st.error("Tennis data could not be loaded.")
         st.code(error)
@@ -205,8 +192,8 @@ else:
     view = view.sort_values("tourney_date").reset_index(drop=True)
     view = add_elo_features(view)
 
-    tour = st.selectbox("Tour", ["All", "ATP", "WTA"])
-    category = st.selectbox("Tournament category", ["All"] + sorted(view["category"].dropna().unique()))
+    tour = st.selectbox("Tour", ["All", "ATP", "WTA"], key="tennis_tour")
+    category = st.selectbox("Tournament category", ["All"] + sorted(view["category"].dropna().unique()), key="tennis_category")
     filtered_view = view
     if tour != "All":
         filtered_view = filtered_view[filtered_view["tour"] == tour]
@@ -222,14 +209,14 @@ else:
     tab1, tab2 = st.tabs(["📊 Match analytics", "🎾 Player ELO"])
     with tab1:
         columns = [c for c in ["tourney_date", "tourney_name", "tour", "winner_name", "loser_name", "winner_elo", "loser_elo", "elo_diff", "surface"] if c in filtered_view.columns]
-        st.dataframe(filtered_view.sort_values("tourney_date", ascending=False)[columns].head(300), use_container_width=True, hide_index=True)
+        st.dataframe(filtered_view.sort_values("tourney_date", ascending=False)[columns].head(300), width="stretch", hide_index=True)
     with tab2:
         latest = {}
         for _, row in view.sort_values("tourney_date").iterrows():
             latest[row["winner_name"]] = row["winner_elo"]
             latest[row["loser_name"]] = row["loser_elo"]
         ratings = pd.DataFrame(sorted(latest.items(), key=lambda item: item[1], reverse=True), columns=["Player", "Pre-match ELO"])
-        st.dataframe(ratings.head(100), use_container_width=True, hide_index=True)
+        st.dataframe(ratings.head(100), width="stretch", hide_index=True)
 
 st.divider()
 st.caption("This dashboard is for research and decision support. Probabilities are estimates, not guarantees of outcomes or profit.")
