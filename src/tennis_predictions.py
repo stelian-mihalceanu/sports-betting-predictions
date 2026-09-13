@@ -17,6 +17,7 @@ def predict_tennis_match(player_a: str, player_b: str, matches: pd.DataFrame, su
     form_a, form_b = _recent_win_rate(frame, player_a, surface), _recent_win_rate(frame, player_b, surface)
     serve_a, serve_b = _serve_profile(frame, player_a, surface), _serve_profile(frame, player_b, surface)
     h2h_a, h2h_b = _h2h(frame, player_a, player_b)
+    sample_a, sample_b = _match_count(frame, player_a), _match_count(frame, player_b)
 
     rating_edge = (elo_a - elo_b) / 400.0
     form_edge = form_a - form_b
@@ -29,6 +30,11 @@ def predict_tennis_match(player_a: str, player_b: str, matches: pd.DataFrame, su
     if h2h_a + h2h_b >= 3:
         p_a = 0.90 * p_a + 0.10 * (h2h_a / (h2h_a + h2h_b))
 
+    weakest_sample = min(sample_a, sample_b)
+    full_confidence_threshold = 15
+    shrink = min(1.0, weakest_sample / full_confidence_threshold)
+    p_a = 0.5 + shrink * (p_a - 0.5)
+
     return {
         "player_a": player_a, "player_b": player_b, "surface": surface,
         "a_win": p_a, "b_win": 1.0 - p_a, "pick": player_a if p_a >= 0.5 else player_b,
@@ -39,7 +45,12 @@ def predict_tennis_match(player_a: str, player_b: str, matches: pd.DataFrame, su
         "aces_a": serve_a["aces"], "aces_b": serve_b["aces"],
         "double_faults_a": serve_a["double_faults"], "double_faults_b": serve_b["double_faults"],
         "h2h_a": h2h_a, "h2h_b": h2h_b, "h2h_total": h2h_a + h2h_b,
+        "sample_a": sample_a, "sample_b": sample_b, "low_sample": weakest_sample < full_confidence_threshold,
     }
+
+
+def _match_count(frame: pd.DataFrame, player: str) -> int:
+    return int((frame["winner_name"].eq(player) | frame["loser_name"].eq(player)).sum())
 
 
 def _elo(frame: pd.DataFrame, player: str, surface: str) -> float:
