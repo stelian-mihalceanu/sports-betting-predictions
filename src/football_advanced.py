@@ -67,12 +67,29 @@ def implied_probability(decimal_odds: float) -> float:
     return 1.0 / decimal_odds if decimal_odds and decimal_odds > 1.0 else float("nan")
 
 
-def value_edge(model_probability: float, decimal_odds: float) -> dict[str, float]:
+def value_edge(model_probability: float, decimal_odds: float, kelly_fraction: float = 0.25) -> dict[str, float]:
+    """Compare the model probability with the market-implied probability.
+
+    ``kelly_fraction`` applies a fractional Kelly (default quarter-Kelly) on
+    top of the full Kelly stake, since full Kelly is too aggressive for model
+    estimates that carry real uncertainty. The suggested stake is clipped to
+    0 when the model has no edge, so it never recommends betting into a
+    negative-EV price.
+    """
     implied = implied_probability(decimal_odds)
-    edge = model_probability - implied
+    edge = round(model_probability - implied, 6)
     fair_odds = 1.0 / model_probability if model_probability > 0 else float("inf")
-    ev = model_probability * decimal_odds - 1.0
-    return {"implied_probability": implied, "edge": edge, "fair_odds": fair_odds, "expected_value": ev}
+    ev = round(model_probability * decimal_odds - 1.0, 6)
+    b = decimal_odds - 1.0
+    full_kelly = ((b * model_probability) - (1.0 - model_probability)) / b if b > 0 else 0.0
+    suggested_stake = round(max(0.0, full_kelly) * kelly_fraction, 6)
+    return {
+        "implied_probability": round(implied, 6),
+        "edge": edge,
+        "fair_odds": round(fair_odds, 6) if math.isfinite(fair_odds) else fair_odds,
+        "expected_value": ev,
+        "kelly_stake_pct": suggested_stake,
+    }
 
 
 def _softmax3(a: float, b: float, c: float) -> np.ndarray:
