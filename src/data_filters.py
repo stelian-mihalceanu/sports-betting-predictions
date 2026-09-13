@@ -4,7 +4,7 @@ Data filtering utilities for tennis and football prediction models.
 Filters datasets to include only target competitions:
 - Tennis: Grand Slams, ATP/WTA 1000, ATP/WTA 500
 - Football: Champions League, Europa League, Conference League,
-  La Liga, Bundesliga, Premier League, Liga 1 (Romania)
+  Serie A, La Liga, Bundesliga, Premier League, Liga 1 (Romania)
 """
 
 import pandas as pd
@@ -58,6 +58,7 @@ TARGET_FOOTBALL_COMPETITIONS = [
     "La Liga",
     "Bundesliga",
     "Premier League",
+    "Serie A",
     "SuperLiga",
     "Liga 1",
     "Romania Liga 1",
@@ -70,6 +71,7 @@ TARGET_COMPETITION_IDS = [
     "ES1",
     "DE1",
     "GB1",
+    "IT1",
     "RO1",
 ]
 
@@ -99,6 +101,8 @@ def _categorize_football_competition(comp_name: str) -> str:
         return "Bundesliga"
     if "Premier League" in comp_name:
         return "Premier League"
+    if "Serie A" in comp_name:
+        return "Serie A"
     if "SuperLiga" in comp_name or "Liga 1" in comp_name:
         return "Liga 1 (Romania)"
     return "Other"
