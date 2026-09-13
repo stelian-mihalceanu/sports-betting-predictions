@@ -12,7 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.data_filters import filter_football_target, filter_tennis_target
-from src.data_loader import load_football_matches, load_tennis_atp, load_tennis_wta
+from src.data_loader import (
+    load_football_matches,
+    load_tennis_atp,
+    load_tennis_wta,
+    load_upcoming_football_fixtures,
+)
 from src.features import add_elo_features, add_football_form_features
 
 st.set_page_config(page_title="Sports Betting Predictions", page_icon="🏆", layout="wide")
@@ -33,37 +38,14 @@ TENNIS_ARCHIVE = "https://raw.githubusercontent.com/Aneeshers/tennis-sackmann-ar
 
 @st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
 def load_all_football() -> pd.DataFrame:
+    data = load_football_matches(source="football-data")
     try:
-        return load_football_matches(source="football-data")
-    except Exception as exc:
-        if "Unknown source" not in str(exc):
-            raise
-        frames = []
-        for start_year in range(2022, 2027):
-            season = f"{str(start_year)[-2:]}{str(start_year + 1)[-2:]}"
-            for code, competition in FOOTBALL_LEAGUES.items():
-                url = f"{FOOTBALL_DATA}/{season}/{code}.csv"
-                response = requests.get(url, timeout=20)
-                if response.status_code != 200:
-                    continue
-                frame = pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1")
-                frame = frame.rename(columns={
-                    "Date": "date", "HomeTeam": "home_team", "AwayTeam": "away_team",
-                    "FTHG": "home_goals", "FTAG": "away_goals", "FTR": "result",
-                })
-                required = {"date", "home_team", "away_team", "home_goals", "away_goals"}
-                if not required.issubset(frame.columns):
-                    continue
-                frame["date"] = pd.to_datetime(frame["date"], dayfirst=True, errors="coerce")
-                frame["competition"] = competition
-                frame["season"] = season
-                frames.append(frame)
-        if not frames:
-            raise RuntimeError("Unable to load public football data") from exc
-        result = pd.concat(frames, ignore_index=True)
-        for column in ["home_goals", "away_goals"]:
-            result[column] = pd.to_numeric(result[column], errors="coerce")
-        return result.sort_values("date").reset_index(drop=True)
+        fixtures = load_upcoming_football_fixtures()
+        data = pd.concat([data, fixtures], ignore_index=True, sort=False)
+    except Exception:
+        # Historical data remains usable even if the weekly fixture feed is temporarily unavailable.
+        pass
+    return data.sort_values("date").reset_index(drop=True)
 
 
 @st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
@@ -99,6 +81,8 @@ def football_history_and_upcoming(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     data["date"] = pd.to_datetime(data["date"], errors="coerce")
     completed = data.dropna(subset=["home_goals", "away_goals", "date"]).copy()
     upcoming = data[data["date"].notna() & data["home_goals"].isna() & data["away_goals"].isna()].copy()
+    upcoming = upcoming[upcoming["date"] >= pd.Timestamp.now().normalize()]
+    upcoming = upcoming.drop_duplicates(subset=["date", "home_team", "away_team", "competition"])
     return completed, upcoming
 
 
@@ -167,6 +151,7 @@ if sport == "Football":
     categories = sorted(featured["category"].dropna().unique())
     category = st.selectbox("Competition", ["All"] + categories)
     view = featured if category == "All" else featured[featured["category"] == category]
+    upcoming_view = upcoming if category == "All" else upcoming[upcoming["category"] == category]
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Completed matches", f"{len(view):,}")
@@ -181,13 +166,12 @@ if sport == "Football":
         st.dataframe(view.sort_values("date", ascending=False)[columns].head(250), use_container_width=True, hide_index=True)
 
     with tab2:
-        upcoming = upcoming.sort_values("date")
-        if upcoming.empty:
+        if upcoming_view.empty:
             st.info("No future fixtures are currently available in the public feed.")
         else:
             state = team_state(completed)
             rows = []
-            for _, match in upcoming.head(100).iterrows():
+            for _, match in upcoming_view.sort_values("date").head(100).iterrows():
                 home, away = str(match["home_team"]), str(match["away_team"])
                 hs = state.get(home, {"elo": 1500.0})
                 aws = state.get(away, {"elo": 1500.0})
