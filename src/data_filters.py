@@ -80,7 +80,32 @@ def filter_football_target(df: pd.DataFrame, use_names: bool = True) -> pd.DataF
     """Filter football data to the supported target competitions."""
     if use_names:
         col = "competition" if "competition" in df.columns else "league"
-        df_target = df[df[col].isin(TARGET_FOOTBALL_COMPETITIONS)].copy()
+        normalized = df[col].astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
+        aliases = {
+            "superliga": "Liga 1",
+            "super liga": "Liga 1",
+            "liga 1": "Liga 1",
+            "romania liga 1": "Liga 1",
+            "serie a": "Serie A",
+            "italy serie a": "Serie A",
+            "laliga": "La Liga",
+        }
+        canonical = normalized.str.lower().map(aliases).fillna(normalized)
+        allowed = {
+            "uefa champions league",
+            "uefa europa league",
+            "uefa conference league",
+            "laliga",
+            "la liga",
+            "bundesliga",
+            "premier league",
+            "serie a",
+            "superliga",
+            "liga 1",
+            "romania liga 1",
+        }
+        df_target = df[canonical.str.lower().isin(allowed)].copy()
+        df_target["competition"] = canonical[canonical.index.isin(df_target.index)].values
     else:
         col = "competition_id"
         df_target = df[df[col].isin(TARGET_COMPETITION_IDS)].copy()
@@ -89,20 +114,21 @@ def filter_football_target(df: pd.DataFrame, use_names: bool = True) -> pd.DataF
 
 
 def _categorize_football_competition(comp_name: str) -> str:
-    if "Champions League" in comp_name:
+    value = str(comp_name).strip().lower()
+    if "champions league" in value:
         return "European - Champions League"
-    if "Europa League" in comp_name:
+    if "europa league" in value:
         return "European - Europa League"
-    if "Conference League" in comp_name:
+    if "conference league" in value:
         return "European - Conference League"
-    if "LaLiga" in comp_name or "La Liga" in comp_name:
+    if "laliga" in value or "la liga" in value:
         return "La Liga"
-    if "Bundesliga" in comp_name:
+    if "bundesliga" in value:
         return "Bundesliga"
-    if "Premier League" in comp_name:
+    if "premier league" in value:
         return "Premier League"
-    if "Serie A" in comp_name:
+    if "serie a" in value:
         return "Serie A"
-    if "SuperLiga" in comp_name or "Liga 1" in comp_name:
+    if "superliga" in value or "liga 1" in value or "romania liga 1" in value:
         return "Liga 1 (Romania)"
     return "Other"
