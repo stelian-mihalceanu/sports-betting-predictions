@@ -14,6 +14,7 @@ PROCESSED_DIR = BASE_DATA_DIR / "processed"
 
 TENNIS_ARCHIVE = "https://raw.githubusercontent.com/Aneeshers/tennis-sackmann-archive/main"
 FOOTBALL_DATA = "https://www.football-data.co.uk/mmz4281"
+FOOTBALL_FIXTURES = "https://www.football-data.co.uk/matches/resources/fixtures.csv"
 FOOTBALL_LEAGUES = {
     "E0": "Premier League",
     "D1": "Bundesliga",
@@ -61,6 +62,31 @@ def load_football_matches(
     if source not in {"local", "football-data"}:
         raise ValueError(f"Unknown source: {source}")
     return _load_football_data(range(2022, 2027), timeout=timeout)
+
+
+def load_upcoming_football_fixtures(timeout: int = 20) -> pd.DataFrame:
+    """Load the provider's current fixture feed for genuinely upcoming matches."""
+    response = requests.get(FOOTBALL_FIXTURES, timeout=timeout)
+    response.raise_for_status()
+    frame = pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1")
+
+    required = {"Div", "Date", "HomeTeam", "AwayTeam"}
+    if not required.issubset(frame.columns):
+        raise RuntimeError("Football fixture feed is missing expected columns")
+
+    frame = frame.rename(columns={
+        "Div": "league_code",
+        "Date": "date",
+        "HomeTeam": "home_team",
+        "AwayTeam": "away_team",
+    })
+    frame = frame[frame["league_code"].isin(FOOTBALL_LEAGUES)].copy()
+    frame["competition"] = frame["league_code"].map(FOOTBALL_LEAGUES)
+    frame["date"] = pd.to_datetime(frame["date"], dayfirst=True, errors="coerce")
+    frame["home_goals"] = pd.NA
+    frame["away_goals"] = pd.NA
+    frame["season"] = "current"
+    return frame.dropna(subset=["date", "home_team", "away_team"]).sort_values("date").reset_index(drop=True)
 
 
 def save_processed_data(df: pd.DataFrame, file_name: str) -> Path:
