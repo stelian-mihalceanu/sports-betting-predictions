@@ -65,28 +65,61 @@ def load_football_matches(
 
 
 def load_upcoming_football_fixtures(timeout: int = 20) -> pd.DataFrame:
-    """Load the provider's current fixture feed for genuinely upcoming matches."""
-    response = requests.get(FOOTBALL_FIXTURES, timeout=timeout)
-    response.raise_for_status()
-    frame = pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1")
+    """Load current/future fixtures from both the weekly feed and season CSVs."""
+    frames: list[pd.DataFrame] = []
 
-    required = {"Div", "Date", "HomeTeam", "AwayTeam"}
-    if not required.issubset(frame.columns):
-        raise RuntimeError("Football fixture feed is missing expected columns")
+    # The weekly feed covers the main leagues, but Romania is published as an
+    # extra league. Keep it in scope by also reading the current-season CSVs.
+    try:
+        response = requests.get(FOOTBALL_FIXTURES, timeout=timeout)
+        response.raise_for_status()
+        frames.append(pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1"))
+    except (requests.RequestException, OSError, ValueError):
+        pass
 
-    frame = frame.rename(columns={
-        "Div": "league_code",
-        "Date": "date",
-        "HomeTeam": "home_team",
-        "AwayTeam": "away_team",
-    })
-    frame = frame[frame["league_code"].isin(FOOTBALL_LEAGUES)].copy()
-    frame["competition"] = frame["league_code"].map(FOOTBALL_LEAGUES)
-    frame["date"] = pd.to_datetime(frame["date"], dayfirst=True, errors="coerce")
-    frame["home_goals"] = pd.NA
-    frame["away_goals"] = pd.NA
-    frame["season"] = "current"
-    return frame.dropna(subset=["date", "home_team", "away_team"]).sort_values("date").reset_index(drop=True)
+    current_season = "2627"
+    for code in FOOTBALL_LEAGUES:
+        url = f"{FOOTBALL_DATA}/{current_season}/{code}.csv"
+        try:
+            response = requests.get(url, timeout=timeout)
+            response.raise_for_status()
+            frames.append(pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1"))
+        except (requests.RequestException, OSError, ValueError):
+            continue
+
+    if not frames:
+        raise RuntimeError("Unable to load current football fixtures")
+
+    normalized_frames = []
+    for frame in frames:
+        required = {"Div", "Date", "HomeTeam", "AwayTeam"}
+        if not required.issubset(frame.columns):
+            continue
+        frame = frame.rename(columns={
+            "Div": "league_code",
+            "Date": "date",
+            "HomeTeam": "home_team",
+            "AwayTeam": "away_team",
+            "FTHG": "home_goals",
+            "FTAG": "away_goals",
+        })
+        frame = frame[frame["league_code"].isin(FOOTBALL_LEAGUES)].copy()
+        if frame.empty:
+            continue
+        frame["competition"] = frame["league_code"].map(FOOTBALL_LEAGUES)
+        frame["date"] = pd.to_datetime(frame["date"], dayfirst=True, errors="coerce")
+        frame["home_goals"] = pd.to_numeric(frame.get("home_goals"), errors="coerce")
+        frame["away_goals"] = pd.to_numeric(frame.get("away_goals"), errors="coerce")
+        frame["season"] = "current"
+        normalized_frames.append(frame[["league_code", "date", "home_team", "away_team", "competition", "home_goals", "away_goals", "season"]])
+
+    if not normalized_frames:
+        raise RuntimeError("Football fixture feeds are missing expected columns")
+
+    result = pd.concat(normalized_frames, ignore_index=True)
+    result = result.dropna(subset=["date", "home_team", "away_team"])
+    result = result[result["home_goals"].isna() & result["away_goals"].isna()]
+    return result.drop_duplicates(subset=["date", "home_team", "away_team", "competition"]).sort_values("date").reset_index(drop=True)
 
 
 def save_processed_data(df: pd.DataFrame, file_name: str) -> Path:
