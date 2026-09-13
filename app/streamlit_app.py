@@ -18,6 +18,7 @@ from src.data_loader import (
     load_upcoming_football_fixtures,
 )
 from src.features import add_elo_features, add_football_form_features
+from src.predictions import build_team_stats, predict_match
 
 st.set_page_config(page_title="Sports Betting Predictions", page_icon="🏆", layout="wide")
 
@@ -91,19 +92,16 @@ def team_state(history: pd.DataFrame) -> dict[str, dict[str, float]]:
     return state
 
 
-def heuristic_1x2(home_elo: float, away_elo: float) -> tuple[float, float, float]:
-    strength = 1.0 / (1.0 + 10.0 ** (((away_elo) - (home_elo + 60.0)) / 400.0))
-    draw_probability = 0.24
-    home_probability = strength * (1.0 - draw_probability)
-    away_probability = (1.0 - strength) * (1.0 - draw_probability)
-    return home_probability, draw_probability, away_probability
+@st.cache_data(ttl=30 * 60, show_spinner=False)
+def build_prediction_state(completed: pd.DataFrame):
+    return team_state(completed), build_team_stats(completed)
 
 
 with st.sidebar:
     sport = st.radio("Sport", ["Football", "Tennis"], key="sport")
     st.divider()
     st.subheader("Data")
-    st.caption("Football: Football-Data.co.uk · Tennis: Sackmann archive")
+    st.caption("Football: Football-Data.co.uk + fixture feeds · Tennis: Sackmann archive")
     st.divider()
     st.caption("Data is refreshed automatically from the public sources.")
 
@@ -149,24 +147,59 @@ if sport == "Football":
         if upcoming_view.empty:
             st.info("No future fixtures are currently available in the public feed.")
         else:
-            state = team_state(completed)
+            elo_state, market_state = build_prediction_state(completed)
             rows = []
-            for _, match in upcoming_view.sort_values("date").head(100).iterrows():
+            for _, match in upcoming_view.sort_values("date").head(150).iterrows():
                 home, away = str(match["home_team"]), str(match["away_team"])
-                hs = state.get(home, {"elo": 1500.0})
-                aws = state.get(away, {"elo": 1500.0})
-                ph, pdraw, pa = heuristic_1x2(hs["elo"], aws["elo"])
+                prediction = predict_match(home, away, elo_state, market_state)
                 rows.append({
-                    "Date": match["date"], "Competition": match["competition"],
-                    "Home": home, "Away": away, "Home win": ph, "Draw": pdraw,
-                    "Away win": pa, "Model pick": max([(ph, "1"), (pdraw, "X"), (pa, "2")])[1],
-                    "ELO diff": hs["elo"] - aws["elo"],
+                    "Date": match["date"],
+                    "Competition": match["competition"],
+                    "Match": f"{home} - {away}",
+                    "FT": prediction["ft_pick"],
+                    "FT 1": prediction["ft_home"],
+                    "FT X": prediction["ft_draw"],
+                    "FT 2": prediction["ft_away"],
+                    "HT": prediction["ht_pick"],
+                    "HT 1": prediction["ht_home"],
+                    "HT X": prediction["ht_draw"],
+                    "HT 2": prediction["ht_away"],
+                    "Score": f"{prediction['likely_home_goals']}-{prediction['likely_away_goals']}",
+                    "xG": f"{prediction['home_xg']:.1f}-{prediction['away_xg']:.1f}",
+                    "Over 1.5": prediction["over_1_5"],
+                    "Over 2.5": prediction["over_2_5"],
+                    "BTTS": prediction["btts"],
+                    "Corners": prediction["expected_corners"],
+                    "Over 8.5 C": prediction["over_8_5_corners"],
+                    "Cards": prediction["expected_cards"],
+                    "Over 3.5 Cards": prediction["over_3_5_cards"],
                 })
+
             predictions = pd.DataFrame(rows)
-            for column in ["Home win", "Draw", "Away win"]:
+            percent_columns = [
+                "FT 1", "FT X", "FT 2", "HT 1", "HT X", "HT 2",
+                "Over 1.5", "Over 2.5", "BTTS", "Over 8.5 C", "Over 3.5 Cards",
+            ]
+            for column in percent_columns:
                 predictions[column] = predictions[column].map(lambda value: f"{value:.0%}")
-            st.caption("ELO probabilities are model estimates, not bookmaker odds or guarantees.")
+            predictions["Corners"] = predictions["Corners"].map(lambda value: f"{value:.1f}")
+            predictions["Cards"] = predictions["Cards"].map(lambda value: f"{value:.1f}")
+
+            st.caption(
+                "Predictions are statistical estimates from recent goals, ELO, corners and card history. "
+                "They are not bookmaker odds or guarantees."
+            )
             st.dataframe(predictions, width="stretch", hide_index=True)
+
+            st.subheader("📌 Market guide")
+            st.markdown(
+                "- **FT / HT:** model pick for final score or half-time result — **1 = home, X = draw, 2 = away**.\n"
+                "- **Score / xG:** most likely exact score and expected goals.\n"
+                "- **Over 1.5 / 2.5:** probability that total goals exceed the line.\n"
+                "- **BTTS:** probability that both teams score.\n"
+                "- **Corners:** expected total corners and probability of Over 8.5.\n"
+                "- **Cards:** expected total cards and probability of Over 3.5."
+            )
 
 else:
     with st.spinner("Loading tennis data…"):
