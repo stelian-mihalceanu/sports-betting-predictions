@@ -16,6 +16,7 @@ TENNIS_ARCHIVE = "https://raw.githubusercontent.com/Aneeshers/tennis-sackmann-ar
 FOOTBALL_DATA = "https://www.football-data.co.uk/mmz4281"
 FOOTBALL_EXTRA_DATA = "https://www.football-data.co.uk/new"
 FOOTBALL_FIXTURES = "https://www.football-data.co.uk/matches/resources/fixtures.csv"
+FOOTBALL_EXTRA_FIXTURES = "https://www.football-data.co.uk/new_league_fixtures.csv"
 FOOTBALL_LEAGUES = {
     "E0": "Premier League",
     "D1": "Bundesliga",
@@ -65,87 +66,91 @@ def load_football_matches(
     return _load_football_data(range(2022, 2027), timeout=timeout)
 
 
+def _normalize_fixture_frame(frame: pd.DataFrame, code: str, season: str = "current") -> pd.DataFrame:
+    frame = frame.rename(columns={
+        "Div": "league_code",
+        "Date": "date",
+        "HomeTeam": "home_team",
+        "AwayTeam": "away_team",
+        "FTHG": "home_goals",
+        "FTAG": "away_goals",
+    }).copy()
+    if "league_code" not in frame.columns:
+        frame["league_code"] = code
+    frame["league_code"] = frame["league_code"].fillna(code)
+    required = {"date", "home_team", "away_team", "league_code"}
+    if not required.issubset(frame.columns):
+        return pd.DataFrame()
+    frame = frame[frame["league_code"].isin(FOOTBALL_LEAGUES)].copy()
+    if frame.empty:
+        return frame
+    frame["competition"] = frame["league_code"].map(FOOTBALL_LEAGUES)
+    frame["date"] = pd.to_datetime(frame["date"], dayfirst=True, errors="coerce")
+    frame["home_goals"] = pd.to_numeric(frame.get("home_goals"), errors="coerce")
+    frame["away_goals"] = pd.to_numeric(frame.get("away_goals"), errors="coerce")
+    frame["season"] = season
+    return frame.dropna(subset=["date", "home_team", "away_team"])
+
+
 def load_upcoming_football_fixtures(timeout: int = 20) -> pd.DataFrame:
-    """Load current football fixtures, including domestic leagues outside the main feed."""
+    """Load current football fixtures, including the extra-league Romania feed."""
     frames: list[pd.DataFrame] = []
 
-    # The weekly fixtures file covers the main leagues (England, Germany,
-    # Italy, Spain, etc.), but not Romania. Keep it as the first source.
+    # Main leagues: weekly fixture feed.
     try:
         response = requests.get(FOOTBALL_FIXTURES, timeout=timeout)
         response.raise_for_status()
-        frame = pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1")
-        if {"Div", "Date", "HomeTeam", "AwayTeam"}.issubset(frame.columns):
-            frame = frame.rename(columns={
-                "Div": "league_code",
-                "Date": "date",
-                "HomeTeam": "home_team",
-                "AwayTeam": "away_team",
-            })
-            frame = frame[frame["league_code"].isin(FOOTBALL_LEAGUES)].copy()
+        frame = _normalize_fixture_frame(
+            pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1"),
+            code="",
+        )
+        if not frame.empty:
             frames.append(frame)
     except (requests.RequestException, OSError, ValueError):
         pass
 
-    # Also read the current-season CSVs directly. This is the reliable fallback
-    # when the weekly fixture file is stale/unavailable and preserves scheduled
-    # matches whose result columns are still blank.
-    season = "2627"
-    for code in FOOTBALL_LEAGUES:
-        if code == "RO1":
-            continue
-        url = f"{FOOTBALL_DATA}/{season}/{code}.csv"
-        try:
-            response = requests.get(url, timeout=timeout)
-            response.raise_for_status()
-            frame = pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1")
-            required = {"Date", "HomeTeam", "AwayTeam"}
-            if not required.issubset(frame.columns):
-                continue
-            frame = frame.rename(columns={
-                "Date": "date",
-                "HomeTeam": "home_team",
-                "AwayTeam": "away_team",
-                "FTHG": "home_goals",
-                "FTAG": "away_goals",
-            })
-            frame["league_code"] = code
-            frames.append(frame[[c for c in ["league_code", "date", "home_team", "away_team", "home_goals", "away_goals"] if c in frame.columns]])
-        except (requests.RequestException, OSError, ValueError):
-            continue
-
-    # Romania is an extra league and is published as one all-seasons CSV.
+    # Extra leagues: this is the actual current fixture feed used by
+    # Football-Data for Romania and the other extra leagues.
     try:
-        url = f"{FOOTBALL_EXTRA_DATA}/Romania.csv"
-        response = requests.get(url, timeout=timeout)
+        response = requests.get(FOOTBALL_EXTRA_FIXTURES, timeout=timeout)
         response.raise_for_status()
-        frame = pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1")
-        required = {"Date", "HomeTeam", "AwayTeam"}
-        if required.issubset(frame.columns):
-            frame = frame.rename(columns={
-                "Date": "date",
-                "HomeTeam": "home_team",
-                "AwayTeam": "away_team",
-                "FTHG": "home_goals",
-                "FTAG": "away_goals",
-            })
-            frame["league_code"] = "RO1"
-            frames.append(frame[[c for c in ["league_code", "date", "home_team", "away_team", "home_goals", "away_goals"] if c in frame.columns]])
+        frame = _normalize_fixture_frame(
+            pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1"),
+            code="",
+        )
+        if not frame.empty:
+            frames.append(frame)
     except (requests.RequestException, OSError, ValueError):
         pass
 
+    # Current season fallback for main leagues.
+    season = "2627"
+    for code in ["E0", "D1", "SP1", "I1"]:
+        try:
+            response = requests.get(f"{FOOTBALL_DATA}/{season}/{code}.csv", timeout=timeout)
+            response.raise_for_status()
+            frame = _normalize_fixture_frame(
+                pd.read_csv(pd.io.common.BytesIO(response.content), encoding="latin1"),
+                code=code,
+                season=season,
+            )
+            if not frame.empty:
+                frames.append(frame)
+        except (requests.RequestException, OSError, ValueError):
+            continue
+
     if not frames:
-        return pd.DataFrame(columns=["league_code", "date", "home_team", "away_team", "home_goals", "away_goals", "competition", "season"])
+        return pd.DataFrame(columns=[
+            "league_code", "date", "home_team", "away_team",
+            "competition", "home_goals", "away_goals", "season"
+        ])
 
     result = pd.concat(frames, ignore_index=True, sort=False)
-    result["competition"] = result["league_code"].map(FOOTBALL_LEAGUES)
-    result["date"] = pd.to_datetime(result["date"], dayfirst=True, errors="coerce")
-    result["home_goals"] = pd.to_numeric(result.get("home_goals"), errors="coerce")
-    result["away_goals"] = pd.to_numeric(result.get("away_goals"), errors="coerce")
-    result["season"] = season
-    result = result.dropna(subset=["date", "home_team", "away_team"])
+    result = result.dropna(subset=["date", "home_team", "away_team", "competition"])
     result = result.sort_values("date")
-    return result.drop_duplicates(subset=["date", "home_team", "away_team", "competition"]).reset_index(drop=True)
+    return result.drop_duplicates(
+        subset=["date", "home_team", "away_team", "competition"]
+    ).reset_index(drop=True)
 
 
 def save_processed_data(df: pd.DataFrame, file_name: str) -> Path:
@@ -205,9 +210,9 @@ def _load_football_data(years, timeout: int = 20) -> pd.DataFrame:
             frame["season"] = season
             frames.append(frame)
 
-    # Romania is an extra league: one CSV contains the available seasons.
+    # Romania is an extra league; its official Football-Data CSV is ROU.csv.
     try:
-        frame = pd.read_csv(f"{FOOTBALL_EXTRA_DATA}/Romania.csv", encoding="latin1")
+        frame = pd.read_csv(f"{FOOTBALL_EXTRA_DATA}/ROU.csv", encoding="latin1")
         frame = frame.rename(
             columns={
                 "Date": "date",
