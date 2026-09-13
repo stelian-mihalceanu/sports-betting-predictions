@@ -36,7 +36,7 @@ FOOTBALL_LEAGUES = {
 TENNIS_ARCHIVE = "https://raw.githubusercontent.com/Aneeshers/tennis-sackmann-archive/main"
 
 
-@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+@st.cache_data(ttl=30 * 60, show_spinner=False)
 def load_all_football() -> pd.DataFrame:
     data = load_football_matches(source="football-data")
     try:
