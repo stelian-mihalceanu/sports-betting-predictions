@@ -25,6 +25,7 @@ FOOTBALL_LEAGUES = {
     "E0": "Premier League",
     "D1": "Bundesliga",
     "SP1": "La Liga",
+    "I1": "Serie A",
     "RO1": "Liga 1",
 }
 TENNIS_ARCHIVE = "https://raw.githubusercontent.com/Aneeshers/tennis-sackmann-archive/main"
