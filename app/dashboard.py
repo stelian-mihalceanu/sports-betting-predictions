@@ -31,17 +31,28 @@ st.markdown("""
 
 st.markdown('<div class="hero"><div class="eyebrow">SPORTS INTELLIGENCE</div><h1>⚡ BetLens</h1><p>Fast football & tennis matchup research — strongest signals first, evidence behind every estimate.</p></div>', unsafe_allow_html=True)
 
-@st.cache_data(ttl=45*60, show_spinner=False)
-def football_data():
-    frames=[load_football_matches(source="football-data")]
-    for loader in (load_upcoming_football_fixtures, load_poland_history, load_poland_upcoming):
-        try:
-            f=loader()
-            if not f.empty: frames.append(f)
-        except Exception: pass
-    d=pd.concat(frames,ignore_index=True,sort=False)
-    d["date"]=pd.to_datetime(d["date"],errors="coerce")
-    return filter_football_target(d).drop_duplicates(["date","home_team","away_team","competition"])
+# Keep expensive sources independent: historical results change slowly, while
+# fixtures change often. This avoids invalidating the whole football cache when
+# only the upcoming schedule changes.
+@st.cache_data(ttl=24*60*60, show_spinner=False)
+def football_history():
+    data = load_football_matches(source="football-data")
+    data["date"] = pd.to_datetime(data["date"], errors="coerce")
+    return filter_football_target(data).drop_duplicates(["date", "home_team", "away_team", "competition"])
+
+@st.cache_data(ttl=20*60, show_spinner=False)
+def football_upcoming():
+    data = load_upcoming_football_fixtures()
+    data["date"] = pd.to_datetime(data["date"], errors="coerce")
+    return filter_football_target(data).drop_duplicates(["date", "home_team", "away_team", "competition"])
+
+@st.cache_data(ttl=30*60, show_spinner=False)
+def poland_bundle():
+    history = load_poland_history()
+    upcoming = load_poland_upcoming()
+    for frame in (history, upcoming):
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    return history, upcoming
 
 @st.cache_data(ttl=24*60*60, show_spinner=False)
 def tennis_data():
@@ -65,12 +76,26 @@ def predict_rows(upcoming,completed):
 
 with st.sidebar:
     sport=st.radio("Sport",["Football","Tennis"],horizontal=True)
-    st.divider(); st.caption("Model outputs are estimates, not bookmaker odds or guarantees.")
+    st.divider()
+    st.caption("Data cache: fixtures 20 min · history 24 h · tennis 24 h")
+    st.caption("Model outputs are estimates, not bookmaker odds or guarantees.")
 
 if sport=="Football":
-    with st.spinner("Loading football…"): data=football_data()
-    completed=data.dropna(subset=["home_goals","away_goals"])
-    upcoming=data[data["home_goals"].isna() & data["away_goals"].isna() & (data["date"]>=pd.Timestamp.now().normalize())]
+    with st.spinner("Loading fixtures…"):
+        upcoming = football_upcoming()
+    # The default path uses the fast core dataset. Poland is loaded only when
+    # its fixtures are actually present/selected, rather than on every cold start.
+    if "Ekstraklasa" in upcoming.get("competition", pd.Series(dtype=str)).astype(str).unique():
+        pol_history, pol_upcoming = poland_bundle()
+        upcoming = pd.concat([upcoming, pol_upcoming], ignore_index=True, sort=False)
+    with st.spinner("Loading model history…"):
+        history = football_history()
+    completed=history.dropna(subset=["home_goals","away_goals"])
+    upcoming=upcoming[upcoming["home_goals"].isna() & upcoming["away_goals"].isna() & (upcoming["date"]>=pd.Timestamp.now().normalize())]
+    # Add Polish history only when Polish fixtures are visible. This keeps the
+    # initial page fast for the much larger domestic/European audience.
+    if "Ekstraklasa" in upcoming.get("competition", pd.Series(dtype=str)).astype(str).unique():
+        completed = pd.concat([completed, pol_history], ignore_index=True, sort=False)
     cats=sorted(upcoming.get("category",pd.Series(dtype=str)).dropna().unique().tolist())
     if not cats: st.warning("No upcoming football fixtures are available."); st.stop()
     c1,c2,c3=st.columns([1.4,1.2,1.1]); category=c1.selectbox("Competition",["All"]+cats); window=c2.selectbox("Window",["Today","Tomorrow","Next 3 days","Next 7 days","All upcoming"]); focus=c3.selectbox("Focus",["FT result","Goals","BTTS","Corners","Cards"])
