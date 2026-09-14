@@ -86,7 +86,11 @@ def load_poland_upcoming(timeout: int = 10) -> pd.DataFrame:
         return pd.DataFrame()
 
     if frame.empty:
-        return frame
+        return pd.DataFrame()
+
     result = _normalize(frame, upcoming=True)
+    if result.empty or "date" not in result.columns:
+        return pd.DataFrame()
+
     today = pd.Timestamp.now().normalize()
     return result[result["date"] >= today].reset_index(drop=True)
