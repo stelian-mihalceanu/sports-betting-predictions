@@ -8,28 +8,36 @@ import pandas as pd
 
 
 def predict_tennis_match(frame: pd.DataFrame, player_a: str, player_b: str, surface: str | None = None) -> dict[str, Any]:
-    """Estimate a tennis matchup from Elo, recent form, serve and H2H."""
+    """Estimate a tennis matchup from Elo, recent form, serve, H2H and fatigue."""
     data = _prepare(frame, surface or "All")
     elo_a, elo_b = _elo(data, player_a, surface or "All"), _elo(data, player_b, surface or "All")
     form_a, form_b = _recent_win_rate(data, player_a, surface or "All"), _recent_win_rate(data, player_b, surface or "All")
     serve_a, serve_b = _serve_profile(data, player_a, surface or "All"), _serve_profile(data, player_b, surface or "All")
     h2h_a, h2h_b = _h2h(data, player_a, player_b)
+    fatigue_a, fatigue_b = _fatigue(data, player_a), _fatigue(data, player_b)
 
-    logit = 1.05 * ((elo_a - elo_b) / 400.0) + 1.10 * (form_a - form_b) + 0.85 * (serve_a["serve_points_won"] - serve_b["serve_points_won"]) + 0.75 * (serve_a["return_points_won"] - serve_b["return_points_won"])
+    logit = (
+        1.05 * ((elo_a - elo_b) / 400.0)
+        + 1.10 * (form_a - form_b)
+        + 0.85 * (serve_a["serve_points_won"] - serve_b["serve_points_won"])
+        + 0.75 * (serve_a["return_points_won"] - serve_b["return_points_won"])
+        - 0.20 * (fatigue_a - fatigue_b)
+    )
     p_a = min(0.95, max(0.05, 1.0 / (1.0 + math.exp(-logit))))
-    if h2h_a + h2h_b >= 3:
-        p_a = 0.90 * p_a + 0.10 * (h2h_a / (h2h_a + h2h_b))
+    h2h_total = h2h_a + h2h_b
+    if h2h_total >= 3:
+        p_a = 0.92 * p_a + 0.08 * (h2h_a / h2h_total)
 
     return {
         "player_a": player_a, "player_b": player_b, "surface": surface or "All",
         "a_win": p_a, "b_win": 1.0 - p_a, "pick": player_a if p_a >= 0.5 else player_b,
         "confidence": max(p_a, 1.0 - p_a), "elo_a": elo_a, "elo_b": elo_b,
-        "form_a": form_a, "form_b": form_b,
+        "form_a": form_a, "form_b": form_b, "fatigue_a": fatigue_a, "fatigue_b": fatigue_b,
         "serve_a": serve_a["serve_points_won"], "serve_b": serve_b["serve_points_won"],
         "return_a": serve_a["return_points_won"], "return_b": serve_b["return_points_won"],
         "aces_a": serve_a["aces"], "aces_b": serve_b["aces"],
         "double_faults_a": serve_a["double_faults"], "double_faults_b": serve_b["double_faults"],
-        "h2h_a": h2h_a, "h2h_b": h2h_b, "h2h_total": h2h_a + h2h_b,
+        "h2h_a": h2h_a, "h2h_b": h2h_b, "h2h_total": h2h_total,
     }
 
 
@@ -66,6 +74,20 @@ def _recent_win_rate(frame: pd.DataFrame, player: str, surface: str) -> float:
     return float(np.mean(subset["winner_name"].eq(player))) if not subset.empty else 0.5
 
 
+def _fatigue(frame: pd.DataFrame, player: str) -> float:
+    """Higher score means more recent workload/density."""
+    mask = frame["winner_name"].eq(player) | frame["loser_name"].eq(player)
+    subset = frame.loc[mask].tail(8)
+    if subset.empty:
+        return 0.0
+    dates = subset["date"].dropna().sort_values().tolist()
+    if len(dates) < 2:
+        return 0.0
+    gaps = np.diff(np.array(dates, dtype="datetime64[D]")).astype(int)
+    density = max(0.0, 3.0 - float(np.mean(np.minimum(gaps, 7))) / 2.0)
+    return float(density + 0.25 * max(0, 4 - len(set(dates))))
+
+
 def _serve_profile(frame: pd.DataFrame, player: str, surface: str) -> dict[str, float]:
     mask = frame["winner_name"].eq(player) | frame["loser_name"].eq(player)
     if surface != "All": mask &= frame["surface"].astype(str).eq(surface)
@@ -92,7 +114,12 @@ def _serve_profile(frame: pd.DataFrame, player: str, surface: str) -> dict[str, 
 
 def _h2h(frame: pd.DataFrame, player_a: str, player_b: str) -> tuple[int, int]:
     pair = frame[((frame["winner_name"].eq(player_a)) & (frame["loser_name"].eq(player_b))) | ((frame["winner_name"].eq(player_b)) & (frame["loser_name"].eq(player_a)))]
-    return int(pair["winner_name"].eq(player_a).sum()), int(pair["winner_name"].eq(player_b).sum())
+    if pair.empty:
+        return 0, 0
+    weights = np.exp(np.linspace(-1.5, 0.0, len(pair)))
+    a_wins = float(np.sum(weights * pair["winner_name"].eq(player_a).to_numpy()))
+    b_wins = float(np.sum(weights * pair["winner_name"].eq(player_b).to_numpy()))
+    return int(round(a_wins)), int(round(b_wins))
 
 
 def _num(value) -> float:
