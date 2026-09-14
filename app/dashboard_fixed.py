@@ -1,149 +1,159 @@
 from __future__ import annotations
 
-from pathlib import Path
-import sys
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-import pandas as pd
+import requests
 import streamlit as st
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+st.set_page_config(page_title="Sports Events", page_icon="🏟️", layout="wide")
 
-from src.data_filters import filter_football_target
-from src.data_loader import load_football_matches, load_upcoming_football_fixtures
-from src.predictions import build_team_stats, predict_match
+TZ = ZoneInfo("Europe/Bucharest")
+API = "https://site.api.espn.com/apis/site/v2/sports"
 
-st.set_page_config(page_title="BetLens", page_icon="⚽", layout="wide")
-
-
-def pct(x: float) -> str:
-    return f"{float(x):.0%}"
-
-
-def fair_odds(x: float) -> float:
-    return round(1 / float(x), 2) if x and x > 0 else 0.0
-
-
-@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
-def history() -> pd.DataFrame:
-    data = load_football_matches(source="football-data", timeout=5)
-    if data.empty:
-        return data
-    data = filter_football_target(data).copy()
-    data["date"] = pd.to_datetime(data["date"], errors="coerce")
-    return data.dropna(subset=["date"]).drop_duplicates(["date", "home_team", "away_team", "competition"])
-
-
-@st.cache_data(ttl=15 * 60, show_spinner=False)
-def upcoming() -> pd.DataFrame:
-    data = load_upcoming_football_fixtures(timeout=5)
-    if data.empty:
-        return data
-    data = filter_football_target(data).copy()
-    data["date"] = pd.to_datetime(data["date"], errors="coerce")
-    return data.dropna(subset=["date"]).drop_duplicates(["date", "home_team", "away_team", "competition"])
+SPORTS = {
+    "Fotbal": {
+        "icon": "⚽",
+        "leagues": {
+            "Premier League": ("soccer", "eng.1"),
+            "La Liga": ("soccer", "esp.1"),
+            "Serie A": ("soccer", "ita.1"),
+            "Bundesliga": ("soccer", "ger.1"),
+            "Ligue 1": ("soccer", "fra.1"),
+        },
+    },
+    "Baschet": {
+        "icon": "🏀",
+        "leagues": {
+            "NBA": ("basketball", "nba"),
+            "EuroLeague": ("basketball", "euroleague"),
+            "WNBA": ("basketball", "wnba"),
+        },
+    },
+    "Tenis": {
+        "icon": "🎾",
+        "leagues": {
+            "ATP": ("tennis", "atp"),
+            "WTA": ("tennis", "wta"),
+        },
+    },
+}
 
 
-@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
-def model_state(data: pd.DataFrame):
-    if data.empty:
-        return {}, {}
-    data = data.dropna(subset=["home_goals", "away_goals"]).sort_values("date")
-    ratings: dict[str, float] = {}
-    for row in data.itertuples(index=False):
-        home, away = str(row.home_team), str(row.away_team)
-        try:
-            hg, ag = float(row.home_goals), float(row.away_goals)
-        except (TypeError, ValueError):
-            continue
-        rh, ra = ratings.get(home, 1500.0), ratings.get(away, 1500.0)
-        expected = 1 / (1 + 10 ** ((ra - rh - 55) / 400))
-        actual = 1.0 if hg > ag else 0.5 if hg == ag else 0.0
-        change = 30 * (actual - expected)
-        ratings[home], ratings[away] = rh + change, ra - change
-    return {k: {"elo": v} for k, v in ratings.items()}, build_team_stats(data)
+def local_now() -> datetime:
+    return datetime.now(TZ)
 
 
-@st.cache_data(ttl=15 * 60, show_spinner=False)
-def predictions(fixtures: pd.DataFrame, hist: pd.DataFrame) -> pd.DataFrame:
-    if fixtures.empty:
-        return pd.DataFrame()
-    elo, stats = model_state(hist)
-    rows = []
-    for r in fixtures.sort_values("date").head(40).itertuples(index=False):
-        try:
-            p = predict_match(str(r.home_team), str(r.away_team), elo, stats)
-        except Exception:
-            continue
-        probs = {"1": p["ft_home"], "X": p["ft_draw"], "2": p["ft_away"]}
-        pick = p["ft_pick"]
-        markets = {f"FT {pick}": probs[pick], "O2.5": p["over_2_5"], "BTTS": p["btts"]}
-        signal, probability = max(markets.items(), key=lambda item: item[1])
-        rows.append({
-            "date": r.date, "competition": r.competition, "home": r.home_team, "away": r.away_team,
-            "signal": signal, "probability": probability, "fair_odds": fair_odds(probability),
-            "ft_pick": pick, "ft_confidence": p["confidence"],
-            "score": f"{p['likely_home_goals']}-{p['likely_away_goals']}",
-            "o25": p["over_2_5"], "btts": p["btts"],
-        })
-    return pd.DataFrame(rows)
+def event_date(event: dict) -> datetime | None:
+    value = event.get("date") or event.get("startDate")
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(TZ)
+    except ValueError:
+        return None
 
 
-st.title("⚽ BetLens")
-st.caption("Predicții simple de fotbal. Probabilitățile sunt estimări ale modelului.")
+def team_names(event: dict) -> tuple[str, str, list[dict]]:
+    competitors = event.get("competitions", [{}])[0].get("competitors", [])
+    home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+    away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+    if not home and competitors:
+        home, away = competitors[0], competitors[1] if len(competitors) > 1 else None
+    home_name = ((home or {}).get("team") or {}).get("displayName") or (home or {}).get("athlete", {}).get("displayName") or "TBD"
+    away_name = ((away or {}).get("team") or {}).get("displayName") or (away or {}).get("athlete", {}).get("displayName") or "TBD"
+    return home_name, away_name, competitors
 
-with st.spinner("Se încarcă meciurile…"):
-    fixtures = upcoming()
-    hist = history()
 
-if fixtures.empty:
-    st.warning("Nu sunt disponibile meciuri viitoare acum.")
-    st.stop()
+def event_status(event: dict) -> str:
+    status = event.get("status", {}).get("type", {})
+    if status.get("completed") or status.get("state") == "post":
+        return "Final"
+    if status.get("state") == "in":
+        return "LIVE"
+    return "Programat"
 
-now = pd.Timestamp.now().normalize()
-period = st.radio("Perioadă", ["Azi", "Mâine", "Următoarele 3 zile", "Toate"], horizontal=True)
-if period == "Azi":
-    view = fixtures[fixtures.date.dt.normalize() == now]
-elif period == "Mâine":
-    view = fixtures[fixtures.date.dt.normalize() == now + pd.Timedelta(days=1)]
-elif period == "Următoarele 3 zile":
-    view = fixtures[fixtures.date < now + pd.Timedelta(days=3)]
-else:
-    view = fixtures
 
-if view.empty:
-    st.info("Nu există meciuri pentru perioada aleasă.")
-    st.stop()
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_events(sport: str, league: str, start: str, end: str) -> list[dict]:
+    url = f"{API}/{sport}/{league}/scoreboard"
+    try:
+        response = requests.get(url, params={"dates": f"{start}-{end}"}, timeout=7)
+        response.raise_for_status()
+        return response.json().get("events", [])
+    except (requests.RequestException, ValueError):
+        return []
 
-pred = predictions(view, hist)
-if pred.empty:
-    st.error("Nu am putut calcula predicțiile.")
-    st.stop()
 
-pred = pred.sort_values(["probability", "date"], ascending=[False, True]).reset_index(drop=True)
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Meciuri", len(pred))
-c2.metric("Cel mai puternic", pct(pred.probability.max()))
-c3.metric("Semnale ≥65%", int((pred.probability >= 0.65).sum()))
-
-st.subheader("Top predicții")
-for row in pred.head(10).itertuples(index=False):
+def render_event(event: dict) -> None:
+    when = event_date(event)
+    home, away, competitors = team_names(event)
+    status = event_status(event)
+    competition = event.get("season", {}).get("displayName", "")
+    if not competition:
+        competition = event.get("name", "")
+    scores = []
+    for competitor in competitors[:2]:
+        scores.append(competitor.get("score", ""))
+    score_text = " - ".join(scores) if status in {"Final", "LIVE"} and any(scores) else "vs"
+    label = f"🔴 {status}" if status == "LIVE" else status
     with st.container(border=True):
-        a, b, c = st.columns([2.4, 1, 1])
-        a.markdown(f"**{row.home} — {row.away}**")
-        a.caption(f"{row.date:%a, %d %b %H:%M} · {row.competition}")
-        a.write(f"**{row.signal}** · {pct(row.probability)} · fair odds {row.fair_odds:.2f}")
-        b.metric("FT", f"{row.ft_pick} · {pct(row.ft_confidence)}")
-        b.metric("Scor", row.score)
-        c.metric("O2.5", pct(row.o25))
-        c.metric("BTTS", pct(row.btts))
+        c1, c2, c3 = st.columns([1.1, 2.7, 1.2])
+        c1.markdown(f"**{when:%d %b}**\n\n{when:%H:%M}" if when else "Time TBD")
+        c2.markdown(f"**{home}**  {score_text}  **{away}**")
+        c2.caption(competition)
+        c3.write(label)
+        if event.get("venue", {}).get("fullName"):
+            c3.caption(event["venue"]["fullName"])
 
-st.subheader("Toate meciurile")
-st.dataframe(
-    pred[["date", "competition", "home", "away", "signal", "probability", "fair_odds", "ft_pick", "ft_confidence", "score"]],
-    hide_index=True,
-    use_container_width=True,
-)
 
-st.caption("BetLens · date publice · estimări probabilistice")
+st.title("🏟️ Sports Events")
+st.caption("Fotbal · tenis · baschet — evenimente programate și rezultate recente")
+
+sport_name = st.radio("Sport", list(SPORTS), horizontal=True)
+config = SPORTS[sport_name]
+league_name = st.selectbox("Competiție", list(config["leagues"]))
+
+period = st.radio("Perioadă", ["Recente + următoare", "Următoarele 7 zile", "Ultimele 7 zile"], horizontal=True)
+now = local_now()
+if period == "Următoarele 7 zile":
+    start_dt, end_dt = now, now + timedelta(days=7)
+elif period == "Ultimele 7 zile":
+    start_dt, end_dt = now - timedelta(days=7), now
+else:
+    start_dt, end_dt = now - timedelta(days=2), now + timedelta(days=5)
+
+sport_code, league_code = config["leagues"][league_name]
+start_key = start_dt.strftime("%Y%m%d")
+end_key = end_dt.strftime("%Y%m%d")
+
+with st.spinner("Se încarcă evenimentele…"):
+    events = fetch_events(sport_code, league_code, start_key, end_key)
+
+parsed = [(event_date(e), e) for e in events]
+parsed = [(d, e) for d, e in parsed if d is not None and start_dt <= d <= end_dt]
+parsed.sort(key=lambda item: item[0])
+
+if not parsed:
+    st.info("Nu există evenimente disponibile pentru selecția curentă.")
+    st.stop()
+
+past = [(d, e) for d, e in parsed if event_status(e) == "Final"]
+upcoming = [(d, e) for d, e in parsed if event_status(e) != "Final"]
+
+m1, m2, m3 = st.columns(3)
+m1.metric("Evenimente", len(parsed))
+m2.metric("Urmează", len(upcoming))
+m3.metric("Finalizate", len(past))
+
+if upcoming:
+    st.subheader("Urmează")
+    for _, event in upcoming:
+        render_event(event)
+
+if past:
+    st.subheader("Rezultate recente")
+    for _, event in reversed(past):
+        render_event(event)
+
+st.caption("Date furnizate de surse publice ESPN. Aplicația este un browser de evenimente, nu o garanție de rezultate sportive.")
