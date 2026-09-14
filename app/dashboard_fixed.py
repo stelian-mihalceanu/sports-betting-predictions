@@ -12,7 +12,7 @@ TZ = ZoneInfo("Europe/Bucharest")
 API = "https://site.api.espn.com/apis/site/v2/sports"
 
 SPORTS = {
-    "Fotbal": {
+    "Football": {
         "icon": "⚽",
         "leagues": {
             "Premier League": ("soccer", "eng.1"),
@@ -22,7 +22,7 @@ SPORTS = {
             "Ligue 1": ("soccer", "fra.1"),
         },
     },
-    "Baschet": {
+    "Basketball": {
         "icon": "🏀",
         "leagues": {
             "NBA": ("basketball", "nba"),
@@ -30,7 +30,7 @@ SPORTS = {
             "WNBA": ("basketball", "wnba"),
         },
     },
-    "Tenis": {
+    "Tennis": {
         "icon": "🎾",
         "leagues": {
             "ATP": ("tennis", "atp"),
@@ -54,7 +54,7 @@ def event_date(event: dict) -> datetime | None:
         return None
 
 
-def team_names(event: dict) -> tuple[str, str, list[dict]]:
+def participant_names(event: dict) -> tuple[str, str, list[dict]]:
     competitors = event.get("competitions", [{}])[0].get("competitors", [])
     home = next((c for c in competitors if c.get("homeAway") == "home"), None)
     away = next((c for c in competitors if c.get("homeAway") == "away"), None)
@@ -71,7 +71,7 @@ def event_status(event: dict) -> str:
         return "Final"
     if status.get("state") == "in":
         return "LIVE"
-    return "Programat"
+    return "Scheduled"
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -87,38 +87,40 @@ def fetch_events(sport: str, league: str, start: str, end: str) -> list[dict]:
 
 def render_event(event: dict) -> None:
     when = event_date(event)
-    home, away, competitors = team_names(event)
+    home, away, competitors = participant_names(event)
     status = event_status(event)
     competition = event.get("season", {}).get("displayName", "")
     if not competition:
         competition = event.get("name", "")
-    scores = []
-    for competitor in competitors[:2]:
-        scores.append(competitor.get("score", ""))
+    scores = [c.get("score", "") for c in competitors[:2]]
     score_text = " - ".join(scores) if status in {"Final", "LIVE"} and any(scores) else "vs"
     label = f"🔴 {status}" if status == "LIVE" else status
     with st.container(border=True):
         c1, c2, c3 = st.columns([1.1, 2.7, 1.2])
-        c1.markdown(f"**{when:%d %b}**\n\n{when:%H:%M}" if when else "Time TBD")
+        if when:
+            c1.markdown(f"**{when:%d %b}**\n\n{when:%H:%M}")
+        else:
+            c1.markdown("Time TBD")
         c2.markdown(f"**{home}**  {score_text}  **{away}**")
         c2.caption(competition)
         c3.write(label)
-        if event.get("venue", {}).get("fullName"):
-            c3.caption(event["venue"]["fullName"])
+        venue = event.get("venue", {}).get("fullName")
+        if venue:
+            c3.caption(venue)
 
 
 st.title("🏟️ Sports Events")
-st.caption("Fotbal · tenis · baschet — evenimente programate și rezultate recente")
+st.caption("Football · Tennis · Basketball — upcoming events and recent results")
 
 sport_name = st.radio("Sport", list(SPORTS), horizontal=True)
 config = SPORTS[sport_name]
-league_name = st.selectbox("Competiție", list(config["leagues"]))
+league_name = st.selectbox("Competition", list(config["leagues"]))
 
-period = st.radio("Perioadă", ["Recente + următoare", "Următoarele 7 zile", "Ultimele 7 zile"], horizontal=True)
+period = st.radio("Period", ["Recent + Upcoming", "Next 7 Days", "Last 7 Days"], horizontal=True)
 now = local_now()
-if period == "Următoarele 7 zile":
+if period == "Next 7 Days":
     start_dt, end_dt = now, now + timedelta(days=7)
-elif period == "Ultimele 7 zile":
+elif period == "Last 7 Days":
     start_dt, end_dt = now - timedelta(days=7), now
 else:
     start_dt, end_dt = now - timedelta(days=2), now + timedelta(days=5)
@@ -127,7 +129,7 @@ sport_code, league_code = config["leagues"][league_name]
 start_key = start_dt.strftime("%Y%m%d")
 end_key = end_dt.strftime("%Y%m%d")
 
-with st.spinner("Se încarcă evenimentele…"):
+with st.spinner("Loading events…"):
     events = fetch_events(sport_code, league_code, start_key, end_key)
 
 parsed = [(event_date(e), e) for e in events]
@@ -135,25 +137,25 @@ parsed = [(d, e) for d, e in parsed if d is not None and start_dt <= d <= end_dt
 parsed.sort(key=lambda item: item[0])
 
 if not parsed:
-    st.info("Nu există evenimente disponibile pentru selecția curentă.")
+    st.info("No events are available for the current selection.")
     st.stop()
 
 past = [(d, e) for d, e in parsed if event_status(e) == "Final"]
 upcoming = [(d, e) for d, e in parsed if event_status(e) != "Final"]
 
 m1, m2, m3 = st.columns(3)
-m1.metric("Evenimente", len(parsed))
-m2.metric("Urmează", len(upcoming))
-m3.metric("Finalizate", len(past))
+m1.metric("Events", len(parsed))
+m2.metric("Upcoming", len(upcoming))
+m3.metric("Completed", len(past))
 
 if upcoming:
-    st.subheader("Urmează")
+    st.subheader("Upcoming")
     for _, event in upcoming:
         render_event(event)
 
 if past:
-    st.subheader("Rezultate recente")
+    st.subheader("Recent Results")
     for _, event in reversed(past):
         render_event(event)
 
-st.caption("Date furnizate de surse publice ESPN. Aplicația este un browser de evenimente, nu o garanție de rezultate sportive.")
+st.caption("Public sports data. This app is an event browser and does not guarantee sporting outcomes.")
