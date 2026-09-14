@@ -7,5 +7,5 @@ statsmodels>=0.14,<1
 requests>=2.31,<3
 python-dotenv>=1.0,<2
 streamlit>=1.30,<2
-pyarrow>=14.0,<20
+pyarrow>=22.0,<26
 pytest>=8.0,<9
